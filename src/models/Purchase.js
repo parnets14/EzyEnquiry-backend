@@ -20,6 +20,7 @@ const purchaseSchema = new mongoose.Schema({
   delivery_number: { type: String, default: '' },
   purchase_date:   { type: Date, default: null },
   status:          { type: String, default: 'Received' },
+  stock_in_done:   { type: Boolean, default: false },   // prevents duplicate stock-in
   notes:           { type: String, default: '' },
   created_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } })
@@ -102,13 +103,15 @@ class Purchase {
   }
 
   static async update(id, company_id, data) {
-    const { supplier_name, product_name, qty, rate, gst_percent, invoice_number, delivery_number, purchase_date, status, notes } = data
+    const { supplier_name, product_name, qty, rate, gst_percent, invoice_number, delivery_number, purchase_date, status, notes, stock_in_done } = data
     const amount       = parseFloat(qty) * parseFloat(rate)
     const gst_amount   = Math.round(amount * gst_percent / 100)
     const total_amount = amount + gst_amount
+    const updateDoc = { supplier_name, product_name, qty, rate, amount, gst_percent, gst_amount, total_amount, invoice_number, delivery_number: delivery_number || '', purchase_date: purchase_date || null, status, notes }
+    if (stock_in_done !== undefined) updateDoc.stock_in_done = stock_in_done
     return PurchaseModel.findOneAndUpdate(
       { _id: id, company_id },
-      { supplier_name, product_name, qty, rate, amount, gst_percent, gst_amount, total_amount, invoice_number, delivery_number: delivery_number || '', purchase_date: purchase_date || null, status, notes },
+      updateDoc,
       { new: true }
     ).lean()
   }
