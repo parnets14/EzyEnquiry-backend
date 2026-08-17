@@ -1,5 +1,6 @@
 const { sendSuccess, sendError, paginate } = require('../utils/helpers')
 const { Inventory }                        = require('../models')
+const StockMovement                        = require('../models/StockMovement')
 
 // ─────────────────────────────────────────────────────────────
 // INVENTORY
@@ -16,6 +17,19 @@ async function listInventory(req, res) {
   ])
 
   sendSuccess(res, { inventory, pagination: paginate(total, parseInt(page), parseInt(limit)) })
+}
+
+/** GET /api/inventory/movements */
+async function listStockMovements(req, res) {
+  const { product_id, warehouse_id, movement_type, reference_type, page = 1, limit = 200 } = req.query
+  const offset = (parseInt(page) - 1) * parseInt(limit)
+
+  const movements = await StockMovement.findAll(req.user.company_id, {
+    product_id, warehouse_id, movement_type, reference_type,
+    limit: parseInt(limit), offset,
+  })
+
+  sendSuccess(res, movements)
 }
 
 /** PATCH /api/inventory/adjust */
@@ -156,6 +170,7 @@ module.exports = {
   // Inventory
   listInventory,
   adjustStock,
+  listStockMovements,
   // Warehouses
   listWarehouses,
   getWarehouse,

@@ -1,6 +1,7 @@
 const mongoose = require('mongoose')
 const { sendSuccess, sendError, paginate } = require('../utils/helpers')
 const { Purchase, Sale, Expense, Payment, Inventory, Notification } = require('../models')
+const StockMovement = require('../models/StockMovement')
 
 // ─────────────────────────────────────────────────────────────
 // PURCHASES
@@ -31,6 +32,7 @@ async function createPurchase(req, res) {
   const gst_amount   = Math.round(amount * gst_percent / 100)
   const total_amount = amount + gst_amount
 
+  // Create purchase with status = 'Pending' (no stock-in yet)
   const purchase = await Purchase.create({
     ...req.body,
     company_id: req.user.company_id,
@@ -38,17 +40,7 @@ async function createPurchase(req, res) {
     created_by: req.user._id,
   })
 
-  // Auto Stock-In
-  if (req.body.product_id) {
-    await Inventory.upsertStockIn(
-      req.user.company_id,
-      req.body.product_id,
-      req.body.warehouse_id || null,
-      qty
-    )
-  }
-
-  // Auto create Payable
+  // Auto create Payable (pending payment obligation)
   await Payment.createPayable({
     company_id:     req.user.company_id,
     supplier_id:    req.body.supplier_id || null,
@@ -57,19 +49,141 @@ async function createPurchase(req, res) {
     invoice_amount: total_amount,
   })
 
-  sendSuccess(res, purchase, 'Purchase created. Inventory & payable auto-updated.', 201)
+  sendSuccess(res, purchase, 'Purchase created with status Pending. Approve → Receive to update inventory.', 201)
+}
+
+/**
+ * PATCH /api/purchases/:id/status
+ * Body: { status: 'Approved' | 'Received' | 'Completed' | 'Cancelled' }
+ *
+ * Business logic:
+ *   Pending   → Approved   : no inventory change
+ *   Approved  → Received   : Stock-In exactly once (idempotency via stock_in_done + StockMovement reference check)
+ *   Received  → Completed  : no inventory change
+ *   Pending   → Cancelled  : no inventory change
+ *   Approved  → Cancelled  : no inventory change
+ *   Received  → Cancelled  : NOT allowed via simple status change — needs a return/reversal flow
+ */
+async function updatePurchaseStatus(req, res) {
+  const { status } = req.body
+  if (!status) return sendError(res, 'status is required.')
+
+  const AUTHORISED_ROLES = ['Super Admin', 'Admin', 'Manager']
+  if (!AUTHORISED_ROLES.includes(req.user?.role)) {
+    return sendError(res, 'Access denied. Only Admin/Manager can change purchase status.', 403)
+  }
+
+  // updateStatus validates transitions and returns { error } on invalid move
+  const result = await Purchase.updateStatus(req.params.id, req.user.company_id, status)
+
+  if (!result) return sendError(res, 'Purchase not found.', 404)
+  if (result.error) return sendError(res, result.error, 400)
+
+  // ── STOCK-IN: only when transitioning to 'Received' ──────
+  if (status === 'Received' && result.product_id) {
+    const purchase = result  // result is the updated doc
+
+    // Idempotency check: has stock-in already been recorded for this purchase?
+    const alreadyDone = await StockMovement.purchaseStockInExists(
+      req.user.company_id,
+      String(purchase._id)
+    )
+
+    if (!alreadyDone) {
+      // Atomically mark stock_in_done so concurrent calls are safe
+      const claimed = await Purchase.markStockInDone(purchase._id, req.user.company_id)
+
+      if (claimed) {
+        // Get current inventory level for audit trail
+        const currentInv = await Inventory.findByProduct(purchase.product_id, purchase.warehouse_id || null)
+        const prevStock   = parseFloat(currentInv?.current_stock || 0)
+        const qty_n       = parseFloat(purchase.qty)
+
+        // Update inventory
+        await Inventory.upsertStockIn(
+          req.user.company_id,
+          purchase.product_id,
+          purchase.warehouse_id || null,
+          qty_n
+        )
+
+        // Write immutable stock movement audit record
+        await StockMovement.create({
+          company_id:     req.user.company_id,
+          product_id:     purchase.product_id,
+          product_name:   purchase.product_name || '',
+          product_code:   purchase.product_code || '',
+          warehouse_id:   purchase.warehouse_id || null,
+          movement_type:  'Stock In',
+          quantity:       qty_n,
+          previous_stock: prevStock,
+          new_stock:      prevStock + qty_n,
+          reference_type: 'Purchase',
+          reference_id:   String(purchase._id),
+          supplier_id:    purchase.supplier_id || null,
+          supplier_name:  purchase.supplier_name || '',
+          invoice_number: purchase.invoice_number || '',
+          notes:          `Stock-in on purchase received: ${purchase.purchase_code}`,
+          created_by:     req.user._id,
+        })
+      }
+    }
+  }
+
+  // Re-fetch fresh copy so response includes updated stock_in_done flag
+  const fresh = await Purchase.findById(req.params.id, req.user.company_id)
+  sendSuccess(res, fresh, `Purchase status updated to ${status}.`)
 }
 
 async function updatePurchase(req, res) {
-  const purchase = await Purchase.update(req.params.id, req.user.company_id, req.body)
+  // Prevent status from being changed via the general update route
+  // Status changes must go through the dedicated PATCH /status route
+  const sanitised = { ...req.body }
+  delete sanitised.status
+  delete sanitised.stock_in_done
+
+  const purchase = await Purchase.update(req.params.id, req.user.company_id, sanitised)
   if (!purchase) return sendError(res, 'Purchase not found.', 404)
   sendSuccess(res, purchase, 'Purchase updated.')
 }
 
 async function deletePurchase(req, res) {
+  // Before deleting, check if stock-in was done — if so, reverse it
+  const purchase = await Purchase.findById(req.params.id, req.user.company_id)
+  if (!purchase) return sendError(res, 'Purchase not found.', 404)
+
+  if (purchase.stock_in_done && purchase.product_id) {
+    // Reverse the stock-in by deducting from inventory
+    await Inventory.deductStock(
+      purchase.product_id,
+      req.user.company_id,
+      purchase.qty,
+      purchase.warehouse_id || null
+    )
+    // Write reversal audit record
+    const currentInv = await Inventory.findByProduct(purchase.product_id, purchase.warehouse_id || null)
+    const prevStock  = parseFloat(currentInv?.current_stock || 0) + parseFloat(purchase.qty)
+    await StockMovement.create({
+      company_id:     req.user.company_id,
+      product_id:     purchase.product_id,
+      product_name:   purchase.product_name || '',
+      product_code:   purchase.product_code || '',
+      warehouse_id:   purchase.warehouse_id || null,
+      movement_type:  'Reversal',
+      quantity:       -parseFloat(purchase.qty),
+      previous_stock: prevStock,
+      new_stock:      prevStock - parseFloat(purchase.qty),
+      reference_type: 'Purchase',
+      reference_id:   String(purchase._id),
+      supplier_name:  purchase.supplier_name || '',
+      notes:          `Stock reversed on purchase deletion: ${purchase.purchase_code}`,
+      created_by:     req.user._id,
+    })
+  }
+
   const deleted = await Purchase.delete(req.params.id, req.user.company_id)
   if (!deleted) return sendError(res, 'Purchase not found.', 404)
-  sendSuccess(res, null, 'Purchase deleted.')
+  sendSuccess(res, null, 'Purchase deleted. Inventory reversed if stock had been received.')
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -384,6 +498,7 @@ async function getSupplierLedger(req, res) {
 
 module.exports = {
   listPurchases, getPurchase, createPurchase, updatePurchase, deletePurchase,
+  updatePurchaseStatus,
   listSuppliers, createSupplier, updateSupplier, deleteSupplier,
   listSales, createSale,
   listExpenses, createExpense, updateExpense, deleteExpense,

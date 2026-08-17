@@ -34,9 +34,10 @@ async function getNextEnqCode() {
 
 class Enquiry {
   static async findAll(company_id, filters = {}) {
-    const { status, search, limit = 20, offset = 0 } = filters
+    const { status, search, limit = 100, offset = 0, created_by } = filters
     const query = { company_id }
     if (status && status !== 'All') query.status = status
+    if (created_by) query.created_by = created_by
     if (search) {
       query.$or = [
         { retailer_name: { $regex: search, $options: 'i' } },
@@ -45,7 +46,8 @@ class Enquiry {
       ]
     }
     return EnquiryModel.find(query)
-      .populate('created_by', 'name')
+      .populate('created_by', 'name role')
+      .populate('order_id',   'order_code status invoice_number')
       .sort({ created_at: -1 })
       .skip(offset)
       .limit(limit)
@@ -53,9 +55,10 @@ class Enquiry {
   }
 
   static async count(company_id, filters = {}) {
-    const { status, search } = filters
+    const { status, search, created_by } = filters
     const query = { company_id }
     if (status && status !== 'All') query.status = status
+    if (created_by) query.created_by = created_by
     if (search) {
       query.$or = [
         { retailer_name: { $regex: search, $options: 'i' } },

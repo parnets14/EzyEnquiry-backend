@@ -1,7 +1,7 @@
 const express = require('express')
 const {
   listEmployees, getEmployee, createEmployee, updateEmployee, deleteEmployee,
-  listAttendance, markAttendance,
+  listAttendance, markAttendance, getAttendanceSummary,
   listSalaryRecords, createSalaryRecord, paySalary,
 } = require('../controllers/hrController')
 
@@ -9,6 +9,7 @@ const router = express.Router()
 
 // ── Sub-routes (must be BEFORE /:id) ──────────────────────────
 router.get   ('/attendance/list',        listAttendance)
+router.get   ('/attendance/summary',     getAttendanceSummary)
 router.post  ('/attendance/mark',        markAttendance)
 router.get   ('/salary/records',         listSalaryRecords)
 router.post  ('/salary/records',         createSalaryRecord)

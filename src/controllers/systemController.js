@@ -185,14 +185,21 @@ async function getDashboardStats(req, res) {
     totalCustomers, totalProducts, totalEnquiries, totalOrders,
     totalDispatches, pendingOrders, lowStockCount,
     totalOutstanding, todaySales, monthSales, yearSales,
-    topProducts, topCustomers, recentEnquiries,
+    topProducts, topCustomers, recentEnquiries, salesTrendRaw,
   ] = await Promise.all([
     CustomerModel.countDocuments({ company_id: cid }),
     ProductModel.countDocuments({ company_id: cid, is_active: true }),
     EnquiryModel.countDocuments({ company_id: cid }),
     OrderModel.countDocuments({ company_id: cid }),
     DispatchModel.countDocuments({ company_id: cid }),
-    OrderModel.countDocuments({ company_id: cid, status: { $in: ['New', 'Accepted', 'Processing', 'Ready'] } }),
+    OrderModel.countDocuments({ company_id: cid, status: { $in: [
+      'New', 'Pending Approval', 'Approved',
+      'Picking Started', 'Picking Completed',
+      'Sorting Started', 'Sorting Completed',
+      'Packing Started', 'Packing Completed',
+      'Invoice Generated', 'Ready for Dispatch',
+      'Dispatched', 'In Transit',
+    ] } }),
     InventoryModel.countDocuments({ company_id: cid, $expr: { $lte: ['$current_stock', '$low_stock_alert'] } }),
     ReceivableModel.aggregate([
       { $match: { company_id: cid, status: { $ne: 'Received' } } },
@@ -233,7 +240,37 @@ async function getDashboardStats(req, res) {
       .sort({ created_at: -1 })
       .limit(5)
       .lean(),
+    // ── 12-month sales + purchase trend ──────────────────────
+    SaleModel.aggregate([
+      { $match: { company_id: cid, sale_date: { $gte: new Date(new Date().getFullYear(), new Date().getMonth() - 11, 1) } } },
+      { $group: { _id: { year: { $year: '$sale_date' }, month: { $month: '$sale_date' } }, sales: { $sum: '$total_amount' } } },
+      { $sort: { '_id.year': 1, '_id.month': 1 } },
+      { $project: { _id: 0, year: '$_id.year', month: '$_id.month', sales: 1 } },
+    ]),
   ])
+
+  // Build 12-month trend combining sales + purchases
+  const { PurchaseModel } = require('../models/Purchase')
+  const purchaseTrendRaw = await PurchaseModel.aggregate([
+    { $match: { company_id: cid, purchase_date: { $gte: new Date(new Date().getFullYear(), new Date().getMonth() - 11, 1) } } },
+    { $group: { _id: { year: { $year: '$purchase_date' }, month: { $month: '$purchase_date' } }, purchase: { $sum: '$total_amount' } } },
+    { $sort: { '_id.year': 1, '_id.month': 1 } },
+    { $project: { _id: 0, year: '$_id.year', month: '$_id.month', purchase: 1 } },
+  ])
+
+  const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const now = new Date()
+  const trend = []
+  for (let i = 11; i >= 0; i--) {
+    const d   = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    const yr  = d.getFullYear()
+    const mo  = d.getMonth() + 1
+    const sRow = salesTrendRaw.find(r => r.year === yr && r.month === mo)
+    const pRow = purchaseTrendRaw.find(r => r.year === yr && r.month === mo)
+    const s = sRow?.sales    || 0
+    const p = pRow?.purchase || 0
+    trend.push({ month: `${MONTH_NAMES[mo - 1]} ${String(yr).slice(2)}`, sales: s, purchase: p, profit: s - p })
+  }
 
   sendSuccess(res, {
     totalCustomers,
@@ -250,6 +287,7 @@ async function getDashboardStats(req, res) {
     topProducts,
     topCustomers,
     recentEnquiries,
+    trend,
   })
 }
 

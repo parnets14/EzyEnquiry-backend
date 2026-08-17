@@ -19,6 +19,7 @@ const warehouseSchema = new mongoose.Schema({
   capacity:          { type: Number, default: 0 },
   unit:              { type: String, default: 'Sq Ft' },
   is_active:         { type: Boolean, default: true },
+  status:            { type: String, default: 'draft' },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } })
 
 warehouseSchema.index({ company_id: 1 })
@@ -64,21 +65,43 @@ class Inventory {
     if (low_stock === true) query.$expr = { $lte: ['$current_stock', '$low_stock_alert'] }
 
     const docs = await InventoryModel.find(query)
-      .populate({ path: 'product_id', select: 'code name unit brand_id category_id', populate: [{ path: 'brand_id', select: 'name' }, { path: 'category_id', select: 'name' }] })
-      .populate('warehouse_id', 'name')
-      .sort({ 'product_id.name': 1 })
+      .populate({
+        path: 'product_id',
+        select: 'code name unit brand_id category_id size finish grade tile_type mrp retail_price retail_rate dealer_price dealer_rate purchase_price purchase_rate pcs_per_box sqft_per_box gst_percent description is_active',
+        populate: [
+          { path: 'brand_id',    select: 'name' },
+          { path: 'category_id', select: 'name' },
+        ],
+      })
+      .populate('warehouse_id', 'name branch_id')
+      .sort({ created_at: -1 })
       .skip(offset)
       .limit(limit)
       .lean()
 
     return docs.map(d => ({
       ...d,
-      product_code:     d.product_id?.code          || '',
-      product_name:     d.product_id?.name          || '',
-      unit:             d.product_id?.unit          || '',
-      brand_name:       d.product_id?.brand_id?.name    || '',
-      category_name:    d.product_id?.category_id?.name || '',
-      warehouse_name:   d.warehouse_id?.name        || '',
+      product_code:     d.product_id?.code               || '',
+      product_name:     d.product_id?.name               || '',
+      unit:             d.product_id?.unit               || '',
+      brand_name:       d.product_id?.brand_id?.name     || '',
+      category_name:    d.product_id?.category_id?.name  || '',
+      warehouse_name:   d.warehouse_id?.name             || '',
+      branch_id:        d.warehouse_id?.branch_id        || null,
+      // ── Extra product fields ──────────────────────────
+      size:             d.product_id?.size               || '',
+      finish:           d.product_id?.finish             || '',
+      grade:            d.product_id?.grade              || '',
+      tile_type:        d.product_id?.tile_type          || '',
+      mrp:              d.product_id?.mrp                || 0,
+      retail_price:     d.product_id?.retail_price       || d.product_id?.retail_rate   || 0,
+      dealer_price:     d.product_id?.dealer_price       || d.product_id?.dealer_rate   || 0,
+      purchase_price:   d.product_id?.purchase_price     || d.product_id?.purchase_rate || 0,
+      pcs_per_box:      d.product_id?.pcs_per_box        || '',
+      sqft_per_box:     d.product_id?.sqft_per_box       || '',
+      gst_percent:      d.product_id?.gst_percent        || '',
+      description:      d.product_id?.description        || '',
+      is_active:        d.product_id?.is_active !== undefined ? d.product_id.is_active : true,
     }))
   }
 
@@ -174,7 +197,7 @@ class Inventory {
   static async updateWarehouse(id, company_id, data) {
     const {
       warehouse_code, name, warehouse_type, location, city, state, address, pincode,
-      contact_person, mobile, email, manager, capacity, unit, is_active,
+      contact_person, mobile, email, manager, branch_id, capacity, unit, is_active, status,
     } = data
     return WarehouseModel.findOneAndUpdate(
       { _id: id, company_id },
@@ -191,9 +214,11 @@ class Inventory {
         mobile:          mobile          || '',
         email:           email           || '',
         manager:         manager         || '',
+        branch_id:       branch_id       || null,
         capacity:        capacity        || 0,
         unit:            unit            || 'Sq Ft',
         is_active:       is_active !== false,
+        ...(status !== undefined && { status }),
       },
       { new: true }
     ).lean()

@@ -3,6 +3,7 @@ const {
   // Inventory
   listInventory,
   adjustStock,
+  listStockMovements,
   // Warehouses
   listWarehouses,
   getWarehouse,
@@ -23,6 +24,7 @@ const router = express.Router()
 // ── Inventory ──────────────────────────────────────────────
 router.get   ('/',                       listInventory)
 router.patch ('/adjust',                 adjustStock)
+router.get   ('/movements',              listStockMovements)   // ← stock movement audit trail
 
 // ── Warehouses (static routes BEFORE /:id) ────────────────
 router.get   ('/warehouses',             listWarehouses)

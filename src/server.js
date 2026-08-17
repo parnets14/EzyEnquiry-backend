@@ -39,7 +39,8 @@ const purchaseRoutes     = require('./routes/purchaseRoutes')
 const salesRoutes        = require('./routes/salesRoutes')
 const expenseRoutes      = require('./routes/expenseRoutes')
 const paymentRoutes      = require('./routes/paymentRoutes')
-const employeeRoutes     = require('./routes/employeeRoutes')
+const employeeRoutes       = require('./routes/employeeRoutes')
+const employeeMasterRoutes = require('./routes/employeeMasterRoutes')
 const reportRoutes       = require('./routes/reportRoutes')
 const notificationRoutes = require('./routes/notificationRoutes')
 const documentRoutes     = require('./routes/documentRoutes')
@@ -109,7 +110,8 @@ app.use('/api/payments',      authenticate, requireCompany, paymentRoutes)
 app.use('/api/quotations',    authenticate, requireCompany, quotationRoutes)
 
 // ── HR ───────────────────────────────────────────────────────
-app.use('/api/employees',     authenticate, requireCompany, employeeRoutes)
+app.use('/api/employees',       authenticate, requireCompany, employeeRoutes)
+app.use('/api/employee-master', authenticate, requireCompany, employeeMasterRoutes)
 
 // ── Reports & Analytics ──────────────────────────────────────
 app.use('/api/reports',       authenticate, requireCompany, reportRoutes)

@@ -19,8 +19,14 @@ const purchaseSchema = new mongoose.Schema({
   invoice_number:  { type: String, default: '' },
   delivery_number: { type: String, default: '' },
   purchase_date:   { type: Date, default: null },
-  status:          { type: String, default: 'Received' },
-  stock_in_done:   { type: Boolean, default: false },   // prevents duplicate stock-in
+  branch_id:       { type: mongoose.Schema.Types.ObjectId, default: null },
+  branch_name:     { type: String, default: '' },
+  status:          {
+    type:    String,
+    enum:    ['Pending', 'Approved', 'Received', 'Completed', 'Cancelled'],
+    default: 'Pending',
+  },
+  stock_in_done:   { type: Boolean, default: false },   // idempotency guard — prevents duplicate stock-in
   notes:           { type: String, default: '' },
   created_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } })
@@ -82,6 +88,7 @@ class Purchase {
       product_id, product_code, product_name,
       qty, rate, amount, gst_percent, gst_amount, total_amount,
       warehouse_id, invoice_number, purchase_date, notes, created_by,
+      branch_id, branch_name,
     } = data
     const purchase_code = await getNextPurchaseCode()
     const purchase = await PurchaseModel.create({
@@ -93,9 +100,13 @@ class Purchase {
       product_name: product_name || '',
       qty, rate, amount, gst_percent, gst_amount, total_amount,
       warehouse_id:    warehouse_id    || null,
+      branch_id:       branch_id       || null,
+      branch_name:     branch_name     || '',
       invoice_number:  invoice_number  || '',
       delivery_number: data.delivery_number || '',
       purchase_date:   purchase_date   || null,
+      status:          'Pending',       // always starts as Pending
+      stock_in_done:   false,
       notes:           notes           || '',
       created_by,
     })
@@ -103,15 +114,62 @@ class Purchase {
   }
 
   static async update(id, company_id, data) {
-    const { supplier_name, product_name, qty, rate, gst_percent, invoice_number, delivery_number, purchase_date, status, notes, stock_in_done } = data
+    const { supplier_name, product_name, qty, rate, gst_percent, invoice_number, delivery_number, purchase_date, notes, branch_id, branch_name, warehouse_id, stock_in_done } = data
     const amount       = parseFloat(qty) * parseFloat(rate)
     const gst_amount   = Math.round(amount * gst_percent / 100)
     const total_amount = amount + gst_amount
-    const updateDoc = { supplier_name, product_name, qty, rate, amount, gst_percent, gst_amount, total_amount, invoice_number, delivery_number: delivery_number || '', purchase_date: purchase_date || null, status, notes }
+    const updateDoc = {
+      supplier_name, product_name, qty, rate, amount, gst_percent, gst_amount, total_amount,
+      invoice_number, delivery_number: delivery_number || '',
+      purchase_date: purchase_date || null,
+      notes,
+      ...(branch_id  !== undefined && { branch_id:  branch_id  || null }),
+      ...(branch_name !== undefined && { branch_name: branch_name || '' }),
+      ...(warehouse_id !== undefined && { warehouse_id: warehouse_id || null }),
+    }
     if (stock_in_done !== undefined) updateDoc.stock_in_done = stock_in_done
     return PurchaseModel.findOneAndUpdate(
       { _id: id, company_id },
       updateDoc,
+      { new: true }
+    ).lean()
+  }
+
+  /**
+   * Update only the status field, with transition validation.
+   * Returns { error } on invalid transition, null if not found, or the updated doc.
+   */
+  static async updateStatus(id, company_id, newStatus) {
+    const VALID_TRANSITIONS = {
+      'Pending':   ['Approved', 'Cancelled'],
+      'Approved':  ['Received', 'Cancelled'],
+      'Received':  ['Completed'],
+      'Completed': [],          // terminal — no further transitions
+      'Cancelled': [],          // terminal — no further transitions
+    }
+
+    const purchase = await PurchaseModel.findOne({ _id: id, company_id }).lean()
+    if (!purchase) return null
+
+    const allowed = VALID_TRANSITIONS[purchase.status] || []
+    if (!allowed.includes(newStatus)) {
+      return { error: `Invalid status transition: ${purchase.status} → ${newStatus}. Allowed: ${allowed.join(', ') || 'none'}.` }
+    }
+
+    const updateDoc = { status: newStatus }
+    // Mark stock_in_done when transitioning to Received (handled by controller)
+    return PurchaseModel.findOneAndUpdate(
+      { _id: id, company_id },
+      { $set: updateDoc },
+      { new: true }
+    ).lean()
+  }
+
+  /** Mark stock_in_done = true atomically (idempotency for stock-in) */
+  static async markStockInDone(id, company_id) {
+    return PurchaseModel.findOneAndUpdate(
+      { _id: id, company_id, stock_in_done: false },   // only if NOT already done
+      { $set: { stock_in_done: true } },
       { new: true }
     ).lean()
   }
