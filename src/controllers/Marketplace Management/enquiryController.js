@@ -3,6 +3,11 @@ const Enquiry      = require('../../models/Marketplace Management/Enquiry');
 const Notification = require('../../models/System Management/Notification');
 const mongoose     = require('mongoose');
 
+// ── Role sets ────────────────────────────────────────────────
+const ENQUIRY_CREATOR_ROLES = ['Retailer', 'Sales Executive', 'Manager', 'Company Owner', 'Super Admin'];
+const ENQUIRY_REPLY_ROLES   = ['Wholesaler', 'Manager', 'Company Owner', 'Super Admin'];
+const SEE_ALL_ROLES         = ['Wholesaler', 'Manager', 'Accountant', 'Company Owner', 'Super Admin', 'Warehouse Staff', 'Sales Executive'];
+
 /** GET /api/enquiries */
 async function listEnquiries(req, res) {
   const { status, search, page = 1, limit = 20 } = req.query;
@@ -10,6 +15,7 @@ async function listEnquiries(req, res) {
 
   const query = { company_id: req.user.company_id };
   if (status && status !== 'All') query.status = status;
+  if (!SEE_ALL_ROLES.includes(req.user?.role)) query.created_by = req.user._id; // Retailer sees own only
   if (search) {
     query.$or = [
       { retailer_name: { $regex: search, $options: 'i' } },
@@ -21,7 +27,8 @@ async function listEnquiries(req, res) {
   const [total, enquiries] = await Promise.all([
     Enquiry.countDocuments(query),
     Enquiry.find(query)
-      .populate('created_by', 'name')
+      .populate('created_by', 'name role')
+      .populate('order_id',   'order_code status invoice_number')
       .sort({ created_at: -1 })
       .skip(offset)
       .limit(parseInt(limit))
@@ -51,6 +58,10 @@ async function getEnquiry(req, res) {
 
 /** POST /api/enquiries */
 async function createEnquiry(req, res) {
+  if (!ENQUIRY_CREATOR_ROLES.includes(req.user?.role)) {
+    return sendError(res, 'Only Retailers and Sales staff can create enquiries.', 403);
+  }
+
   const { retailer_name, retailer_mobile, qty } = req.body;
   if (!retailer_name || !retailer_mobile || !qty)
     return sendError(res, 'Retailer name, mobile and qty are required.');
@@ -72,7 +83,7 @@ async function createEnquiry(req, res) {
     company_id:   req.user.company_id,
     type:         'enquiry',
     title:        `New Enquiry — ${enq_code}`,
-    message:      `New enquiry from ${retailer_name} for ${req.body.product_name || '—'} × ${qty}`,
+    message:      `New enquiry from ${retailer_name} for ${req.body.product_name || '—'} × ${qty} ${req.body.unit || 'Sq Ft'}`,
     reference_id: enq._id,
   });
 
@@ -81,15 +92,26 @@ async function createEnquiry(req, res) {
 
 /** PATCH /api/enquiries/:id */
 async function updateEnquiry(req, res) {
-  const { status, distributor_reply, negotiation_note, offered_price, order_id, remarks } = req.body;
+  const REPLY_STATUSES = ['Viewed', 'Replied', 'Negotiation', 'Confirmed', 'Cancelled'];
+
+  // Enforce role for wholesaler-action statuses
+  if (req.body.status && REPLY_STATUSES.includes(req.body.status)) {
+    if (!ENQUIRY_REPLY_ROLES.includes(req.user?.role)) {
+      return sendError(res, 'Only Wholesalers and Managers can update enquiry status.', 403);
+    }
+  }
+  if (req.user?.role === 'Retailer' && req.body.status) {
+    return sendError(res, 'Retailers cannot change enquiry status.', 403);
+  }
+
   const VALID = ['New', 'Viewed', 'Replied', 'Negotiation', 'Confirmed', 'Cancelled'];
   const update = {};
-  if (status && VALID.includes(status)) update.status            = status;
-  if (distributor_reply !== undefined)  update.distributor_reply = distributor_reply;
-  if (negotiation_note  !== undefined)  update.negotiation_note  = negotiation_note;
-  if (offered_price     !== undefined)  update.offered_price     = offered_price;
-  if (remarks           !== undefined)  update.remarks           = remarks;
-  if (order_id)                         update.order_id          = order_id;
+  if (req.body.status && VALID.includes(req.body.status)) update.status            = req.body.status;
+  if (req.body.distributor_reply !== undefined)            update.distributor_reply = req.body.distributor_reply;
+  if (req.body.negotiation_note  !== undefined)            update.negotiation_note  = req.body.negotiation_note;
+  if (req.body.offered_price     !== undefined)            update.offered_price     = req.body.offered_price;
+  if (req.body.remarks           !== undefined)            update.remarks           = req.body.remarks;
+  if (req.body.order_id)                                   update.order_id          = req.body.order_id;
 
   const enq = await Enquiry.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },

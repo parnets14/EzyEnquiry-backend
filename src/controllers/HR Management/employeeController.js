@@ -1,14 +1,15 @@
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
-const Employee  = require('../../models/HR Management/Employee');
+const Employee   = require('../../models/HR Management/Employee');
 const Attendance = require('../../models/HR Management/Attendance');
 
 /** GET /api/employees */
 async function listEmployees(req, res) {
-  const { department, is_active, page = 1, limit = 20 } = req.query;
+  const { department, branch, is_active, page = 1, limit = 200 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const query = { company_id: req.user.company_id };
   if (department)              query.department = department;
+  if (branch)                  query.branch     = branch;
   if (is_active !== undefined) query.is_active  = is_active !== 'false';
 
   const [total, employees] = await Promise.all([
@@ -30,8 +31,10 @@ async function getEmployee(req, res) {
     .lean();
   if (!emp) return sendError(res, 'Employee not found.', 404);
 
-  const attendance = await Attendance.find({ company_id: req.user.company_id, employee_id: req.params.id })
-    .sort({ date: -1 }).limit(30).lean();
+  const attendance = await Attendance.find({
+    company_id:  req.user.company_id,
+    employee_id: req.params.id,
+  }).sort({ date: -1 }).limit(30).lean();
 
   sendSuccess(res, { ...emp, attendance });
 }
@@ -50,24 +53,30 @@ async function createEmployee(req, res) {
     email:       req.body.email       || '',
     department:  req.body.department  || '',
     designation: req.body.designation || '',
+    branch:      req.body.branch      || '',
     join_date:   req.body.join_date   || null,
     salary:      req.body.salary      || 0,
+    pan:         req.body.pan         || '',
+    address:     req.body.address     || '',
   });
   sendSuccess(res, emp, 'Employee created.', 201);
 }
 
 /** PUT /api/employees/:id */
 async function updateEmployee(req, res) {
-  const { name, mobile, email, department, designation, join_date, salary, is_active } = req.body;
+  const { name, mobile, email, department, designation, branch, join_date, salary, pan, address, is_active } = req.body;
   const update = {};
   if (name        !== undefined) update.name        = name;
   if (mobile      !== undefined) update.mobile      = mobile;
   if (email       !== undefined) update.email       = email;
   if (department  !== undefined) update.department  = department;
   if (designation !== undefined) update.designation = designation;
-  if (join_date   !== undefined) update.join_date   = join_date || null;
+  if (branch      !== undefined) update.branch      = branch      || '';
+  if (join_date   !== undefined) update.join_date   = join_date   || null;
   if (salary      !== undefined) update.salary      = salary;
-  if (is_active   !== undefined) update.is_active   = is_active;
+  if (pan         !== undefined) update.pan         = pan         || '';
+  if (address     !== undefined) update.address     = address     || '';
+  if (is_active   !== undefined) update.is_active   = is_active !== false;
 
   const emp = await Employee.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },

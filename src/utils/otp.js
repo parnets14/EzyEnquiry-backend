@@ -1,5 +1,5 @@
 const bcrypt    = require('bcryptjs')
-const OtpStore  = require('../models/OtpStore')
+const OtpStore  = require('../models/System Management/OtpStore')
 
 const OTP_LENGTH  = parseInt(process.env.OTP_LENGTH          || '6')
 const OTP_EXPIRES = parseInt(process.env.OTP_EXPIRES_MINUTES || '10')

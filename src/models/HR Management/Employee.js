@@ -10,8 +10,11 @@ const employeeSchema = new mongoose.Schema(
     email:       { type: String, default: '' },
     department:  { type: String, default: '' },
     designation: { type: String, default: '' },
+    branch:      { type: String, default: '' },
     join_date:   { type: Date, default: null },
     salary:      { type: Number, default: 0 },
+    pan:         { type: String, default: '' },
+    address:     { type: String, default: '' },
     is_active:   { type: Boolean, default: true },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
