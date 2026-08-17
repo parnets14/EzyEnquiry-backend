@@ -1,5 +1,5 @@
-const jwt       = require('jsonwebtoken')
-const { UserModel } = require('../models/User')
+const jwt  = require('jsonwebtoken')
+const User = require('../models/User Management/User')
 
 /**
  * Verify JWT and attach req.user
@@ -15,7 +15,7 @@ async function authenticate(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET)
 
     // Use UserModel (Mongoose model) directly so .select() and .lean() work
-    const user = await UserModel.findById(decoded.userId)
+    const user = await User.findById(decoded.userId)
       .select('_id company_id name email mobile role is_active')
       .lean()
 

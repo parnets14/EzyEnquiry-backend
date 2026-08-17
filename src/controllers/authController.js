@@ -1,8 +1,9 @@
-const bcrypt   = require('bcryptjs')
-const jwt      = require('jsonwebtoken')
-const { User } = require('../models')
+const bcrypt  = require('bcryptjs')
+const jwt     = require('jsonwebtoken')
+const User    = require('../models/User Management/User')
+const Company = require('../models/Company Management/Company')
 const { generateOtp, storeOtp, verifyOtp } = require('../utils/otp')
-const { sendOtpMail }    = require('../utils/mailer')
+const { sendOtpMail }            = require('../utils/mailer')
 const { sendSuccess, sendError } = require('../utils/helpers')
 
 function signToken(userId) {
@@ -11,23 +12,22 @@ function signToken(userId) {
   })
 }
 
-/** POST /api/auth/login  (email + password) */
+/** POST /api/auth/login */
 async function login(req, res) {
   const { email, password } = req.body
   if (!email || !password) return sendError(res, 'Email and password are required.')
 
-  const user = await User.findByEmail(email)
-  if (!user)             return sendError(res, 'Invalid email or password.', 401)
-  if (!user.is_active)   return sendError(res, 'Account is deactivated. Contact admin.', 403)
+  const user = await User.findOne({ email: email.toLowerCase().trim() }).lean()
+  if (!user)           return sendError(res, 'Invalid email or password.', 401)
+  if (!user.is_active) return sendError(res, 'Account is deactivated. Contact admin.', 403)
 
   const valid = await bcrypt.compare(password, user.password_hash)
   if (!valid) return sendError(res, 'Invalid email or password.', 401)
 
-  await User.updateLastLogin(user._id)
+  await User.findByIdAndUpdate(user._id, { last_login: new Date() })
 
   const token = signToken(user._id)
   const { password_hash, ...userSafe } = user
-
   sendSuccess(res, { token, user: userSafe }, 'Login successful')
 }
 
@@ -38,10 +38,7 @@ async function sendOtp(req, res) {
 
   const otp = generateOtp()
   await storeOtp(target, otp, purpose, type)
-
-  if (type === 'email') {
-    await sendOtpMail(target, otp, purpose)
-  }
+  if (type === 'email') await sendOtpMail(target, otp, purpose)
 
   sendSuccess(res, { sent: true }, `OTP sent to ${type === 'email' ? 'email' : 'mobile'}`)
 }
@@ -55,11 +52,13 @@ async function verifyOtpHandler(req, res) {
   if (!result.valid) return sendError(res, result.reason, 400)
 
   if (purpose === 'login') {
-    const user = await User.findByEmailOrMobile(target)
+    const user = await User.findOne({ $or: [{ email: target }, { mobile: target }] })
+      .select('-password_hash')
+      .lean()
     if (!user)           return sendError(res, 'User not found.', 404)
     if (!user.is_active) return sendError(res, 'Account deactivated.', 403)
 
-    await User.updateLastLogin(user._id)
+    await User.findByIdAndUpdate(user._id, { last_login: new Date() })
     const token = signToken(user._id)
     return sendSuccess(res, { token, user }, 'OTP verified. Login successful.')
   }
@@ -69,20 +68,12 @@ async function verifyOtpHandler(req, res) {
 
 /** GET /api/auth/me */
 async function me(req, res) {
-  const { UserModel } = require('../models/User')
-  const { CompanyModel } = require('../models/Company')
-
-  const user = await UserModel.findById(req.user._id)
-    .select('-password_hash')
-    .lean()
-
+  const user = await User.findById(req.user._id).select('-password_hash').lean()
   if (!user) return sendError(res, 'User not found.', 404)
 
   let company = null
   if (user.company_id) {
-    company = await CompanyModel.findById(user.company_id)
-      .select('name subscription_plan status')
-      .lean()
+    company = await Company.findById(user.company_id).select('name subscription_plan status').lean()
   }
 
   sendSuccess(res, {
@@ -99,12 +90,12 @@ async function changePassword(req, res) {
   if (!currentPassword || !newPassword) return sendError(res, 'Both fields are required.')
   if (newPassword.length < 8) return sendError(res, 'New password must be at least 8 characters.')
 
-  const user = await User.findByEmail(req.user.email)
+  const user = await User.findById(req.user._id).lean()
   const valid = await bcrypt.compare(currentPassword, user.password_hash)
   if (!valid) return sendError(res, 'Current password is incorrect.', 400)
 
-  const hash = await bcrypt.hash(newPassword, 12)
-  await User.updatePassword(req.user._id, hash)
+  const password_hash = await bcrypt.hash(newPassword, 12)
+  await User.findByIdAndUpdate(req.user._id, { password_hash })
   sendSuccess(res, null, 'Password changed successfully.')
 }
 

@@ -1,41 +1,59 @@
-const Company      = require('./Company')
-const User         = require('./User')
-const Branch       = require('./Branch')
-const Product      = require('./Product')
-const Category     = require('./Category')
-const Brand        = require('./Brand')
-const Inventory    = require('./Inventory')
-const Enquiry      = require('./Enquiry')
-const Order        = require('./Order')
-const Dispatch     = require('./Dispatch')
-const Customer     = require('./Customer')
-const Lead         = require('./Lead')
-const Followup     = require('./Followup')
-const Purchase     = require('./Purchase')
-const Sale         = require('./Sale')
-const Expense      = require('./Expense')
-const Payment      = require('./Payment')
-const Employee     = require('./Employee')
-const Notification = require('./Notification')
+const Company       = require('./Company Management/Company')
+const Branch        = require('./Company Management/Branch')
+const User          = require('./User Management/User')
+const Category      = require('./Product Management/Category')
+const Brand         = require('./Product Management/Brand')
+const Product       = require('./Product Management/Product')
+const Supplier      = require('./Purchase & Inventory Management/Supplier')
+const Purchase      = require('./Purchase & Inventory Management/Purchase')
+const Warehouse     = require('./Purchase & Inventory Management/Warehouse')
+const Inventory     = require('./Purchase & Inventory Management/Inventory')
+const StockTransfer = require('./Purchase & Inventory Management/StockTransfer')
+const StockMovement = require('./Purchase & Inventory Management/StockMovement')
+const Enquiry       = require('./Marketplace Management/Enquiry')
+const Order         = require('./Marketplace Management/Order')
+const Dispatch      = require('./Marketplace Management/Dispatch')
+const Customer      = require('./CRM Management/Customer')
+const Lead          = require('./CRM Management/Lead')
+const Followup      = require('./CRM Management/Followup')
+const Sale          = require('./Finance Management/Sale')
+const Expense       = require('./Finance Management/Expense')
+const Receivable    = require('./Finance Management/Receivable')
+const Payable       = require('./Finance Management/Payable')
+const Transaction   = require('./Finance Management/Transaction')
+const Quotation     = require('./Finance Management/Quotation')
+const Employee      = require('./HR Management/Employee')
+const Attendance    = require('./HR Management/Attendance')
+const SalaryRecord  = require('./HR Management/SalaryRecord')
+const Notification  = require('./System Management/Notification')
 
 module.exports = {
   Company,
-  User,
   Branch,
-  Product,
+  User,
   Category,
   Brand,
+  Product,
+  Supplier,
+  Purchase,
+  Warehouse,
   Inventory,
+  StockTransfer,
+  StockMovement,
   Enquiry,
   Order,
   Dispatch,
   Customer,
   Lead,
   Followup,
-  Purchase,
   Sale,
   Expense,
-  Payment,
+  Receivable,
+  Payable,
+  Transaction,
+  Quotation,
   Employee,
+  Attendance,
+  SalaryRecord,
   Notification,
 }

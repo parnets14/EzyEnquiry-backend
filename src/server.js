@@ -12,39 +12,41 @@ const path        = require('path')
 const connectDB = require('./config/database')
 
 // ── Utils ────────────────────────────────────────────────────
-const { logger } = require('./utils/logger')
+const { logger }                     = require('./utils/logger')
+const { seedSuperAdmin, healOrphanUsers } = require('./utils/seeder')
 
 // ── Middleware ───────────────────────────────────────────────
-const { errorHandler }           = require('./middleware/errorHandler')
-const { rateLimiter,
-        authRateLimiter }        = require('./middleware/rateLimiter')
+const { errorHandler }       = require('./middleware/errorHandler')
+const { rateLimiter }        = require('./middleware/rateLimiter')
 const { authenticate,
-        requireCompany }         = require('./middleware/auth')
+        requireCompany }     = require('./middleware/auth')
 
 // ── Routes ───────────────────────────────────────────────────
 const authRoutes         = require('./routes/authRoutes')
-const companyRoutes      = require('./routes/companyRoutes')
-const userRoutes         = require('./routes/userRoutes')
-const categoryRoutes     = require('./routes/categoryRoutes')
-const brandRoutes        = require('./routes/brandRoutes')
-const productRoutes      = require('./routes/productRoutes')
-const inventoryRoutes    = require('./routes/inventoryRoutes')
-const enquiryRoutes      = require('./routes/enquiryRoutes')
-const orderRoutes        = require('./routes/orderRoutes')
-const dispatchRoutes     = require('./routes/dispatchRoutes')
-const customerRoutes     = require('./routes/customerRoutes')
-const leadRoutes         = require('./routes/leadRoutes')
-const followupRoutes     = require('./routes/followupRoutes')
-const purchaseRoutes     = require('./routes/purchaseRoutes')
-const salesRoutes        = require('./routes/salesRoutes')
-const expenseRoutes      = require('./routes/expenseRoutes')
-const paymentRoutes      = require('./routes/paymentRoutes')
-const employeeRoutes     = require('./routes/employeeRoutes')
-const reportRoutes       = require('./routes/reportRoutes')
-const notificationRoutes = require('./routes/notificationRoutes')
-const documentRoutes     = require('./routes/documentRoutes')
-const subscriptionRoutes = require('./routes/subscriptionRoutes')
-const quotationRoutes    = require('./routes/quotationRoutes')
+const companyRoutes      = require('./routes/Company Management/companyRoutes')
+const userRoutes         = require('./routes/User Management/userRoutes')
+const categoryRoutes     = require('./routes/Product Management/categoryRoutes')
+const brandRoutes        = require('./routes/Product Management/brandRoutes')
+const productRoutes      = require('./routes/Product Management/productRoutes')
+const inventoryRoutes    = require('./routes/Purchase & Inventory Management/inventoryRoutes')
+const warehouseRoutes    = require('./routes/Purchase & Inventory Management/warehouseRoutes')
+const supplierRoutes     = require('./routes/Purchase & Inventory Management/supplierRoutes')
+const enquiryRoutes      = require('./routes/Marketplace Management/enquiryRoutes')
+const orderRoutes        = require('./routes/Marketplace Management/orderRoutes')
+const dispatchRoutes     = require('./routes/Marketplace Management/dispatchRoutes')
+const customerRoutes     = require('./routes/CRM Management/customerRoutes')
+const leadRoutes         = require('./routes/CRM Management/leadRoutes')
+const followupRoutes     = require('./routes/CRM Management/followupRoutes')
+const purchaseRoutes     = require('./routes/Purchase & Inventory Management/purchaseRoutes')
+const salesRoutes        = require('./routes/Finance Management/salesRoutes')
+const expenseRoutes      = require('./routes/Finance Management/expenseRoutes')
+const paymentRoutes      = require('./routes/Finance Management/paymentRoutes')
+const employeeRoutes     = require('./routes/HR Management/employeeRoutes')
+const reportRoutes       = require('./routes/Reports Management/reportRoutes')
+const notificationRoutes = require('./routes/System Management/notificationRoutes')
+const documentRoutes     = require('./routes/System Management/documentRoutes')
+const subscriptionRoutes = require('./routes/System Management/subscriptionRoutes')
+const quotationRoutes    = require('./routes/Finance Management/quotationRoutes')
 
 // ────────────────────────────────────────────────────────────
 const app  = express()
@@ -77,172 +79,66 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), service: 'EzyEnquiry API' })
 })
 
-// ── Public Routes (no auth required) ─────────────────────────
+// ── Public Routes ─────────────────────────────────────────────
 app.use('/api/auth', authRoutes)
 
-// ── Protected Routes (auth required) ─────────────────────────
+// ── Protected Routes ──────────────────────────────────────────
 app.use('/api/companies',     authenticate, companyRoutes)
 app.use('/api/users',         authenticate, requireCompany, userRoutes)
 
-// ── Product & Inventory ──────────────────────────────────────
+// ── Product & Inventory ───────────────────────────────────────
 app.use('/api/categories',     authenticate, requireCompany, categoryRoutes)
-app.use('/api/sub-categories', authenticate, requireCompany, require('./routes/subCategoryRoutes'))
+app.use('/api/sub-categories', authenticate, requireCompany, require('./routes/Product Management/subCategoryRoutes'))
 app.use('/api/brands',         authenticate, requireCompany, brandRoutes)
 app.use('/api/products',       authenticate, requireCompany, productRoutes)
 app.use('/api/inventory',      authenticate, requireCompany, inventoryRoutes)
+app.use('/api/warehouses',     authenticate, requireCompany, warehouseRoutes)
+app.use('/api/suppliers',      authenticate, requireCompany, supplierRoutes)
 
-// ── Marketplace ──────────────────────────────────────────────
+// ── Marketplace ───────────────────────────────────────────────
 app.use('/api/enquiries',     authenticate, requireCompany, enquiryRoutes)
 app.use('/api/orders',        authenticate, requireCompany, orderRoutes)
 app.use('/api/dispatches',    authenticate, requireCompany, dispatchRoutes)
 
-// ── CRM ──────────────────────────────────────────────────────
+// ── CRM ───────────────────────────────────────────────────────
 app.use('/api/customers',     authenticate, requireCompany, customerRoutes)
 app.use('/api/leads',         authenticate, requireCompany, leadRoutes)
 app.use('/api/followups',     authenticate, requireCompany, followupRoutes)
 
-// ── Finance ──────────────────────────────────────────────────
+// ── Finance ───────────────────────────────────────────────────
 app.use('/api/purchases',     authenticate, requireCompany, purchaseRoutes)
 app.use('/api/sales',         authenticate, requireCompany, salesRoutes)
 app.use('/api/expenses',      authenticate, requireCompany, expenseRoutes)
 app.use('/api/payments',      authenticate, requireCompany, paymentRoutes)
 app.use('/api/quotations',    authenticate, requireCompany, quotationRoutes)
 
-// ── HR ───────────────────────────────────────────────────────
+// ── HR ────────────────────────────────────────────────────────
 app.use('/api/employees',     authenticate, requireCompany, employeeRoutes)
 
-// ── Reports & Analytics ──────────────────────────────────────
+// ── Reports & Analytics ───────────────────────────────────────
 app.use('/api/reports',       authenticate, requireCompany, reportRoutes)
 
-// ── System ───────────────────────────────────────────────────
+// ── System ────────────────────────────────────────────────────
 app.use('/api/notifications', authenticate, requireCompany, notificationRoutes)
 app.use('/api/documents',     authenticate, requireCompany, documentRoutes)
 app.use('/api/subscriptions', authenticate, requireCompany, subscriptionRoutes)
 
-// ── 404 Handler ──────────────────────────────────────────────
+// ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route ${req.method} ${req.path} not found` })
 })
 
-// ── Global Error Handler ─────────────────────────────────────
+// ── Global Error Handler ──────────────────────────────────────
 app.use(errorHandler)
 
 // ── Connect DB → Start Server ─────────────────────────────────
 connectDB().then(async () => {
-  // ── Seed Super Admin + default company on first boot ────────
   await seedSuperAdmin()
-  // ── Heal any users with missing company_id ───────────────────
   await healOrphanUsers()
 
   app.listen(PORT, () => {
     console.log(`✓ Server running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`)
   })
 })
-
-/**
- * Creates the Super Admin user if one does not already exist,
- * and seeds a default company for them to use immediately.
- * Credentials come from .env: SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD
- */
-async function seedSuperAdmin() {
-  try {
-    const bcrypt         = require('bcryptjs')
-    const { UserModel }  = require('./models/User')
-    const { CompanyModel } = require('./models/Company')
-
-    const email = process.env.SUPER_ADMIN_EMAIL || 'ezyenquiry@gmail.com'
-    const existing = await UserModel.findOne({ email }).lean()
-
-    if (existing) {
-      // If the Super Admin exists but has no company_id, assign the default company
-      if (!existing.company_id) {
-        let company = await CompanyModel.findOne({}).sort({ created_at: 1 }).lean()
-        if (!company) {
-          company = await CompanyModel.create({
-            company_code:      'COM-001',
-            name:              process.env.SUPER_ADMIN_COMPANY_NAME || 'EzyEnquiry Pvt Ltd',
-            owner_name:        process.env.SUPER_ADMIN_NAME         || 'Super Admin',
-            biz_type:          'Wholesaler',
-            mobile:            '9000000000',
-            email:             email,
-            subscription_plan: 'Platinum',
-            status:            'Approved',
-          })
-          console.log('[Seed] ✓ Default company created — EzyEnquiry Pvt Ltd')
-        }
-        await UserModel.findByIdAndUpdate(existing._id, { company_id: company._id })
-        console.log('[Seed] ✓ Super Admin linked to company —', company.name)
-      } else {
-        console.log('[Seed] Super Admin already exists — skipping.')
-      }
-      return
-    }
-
-    // ── Ensure default company exists ─────────────────────────
-    let company = await CompanyModel.findOne({}).sort({ created_at: 1 }).lean()
-    if (!company) {
-      company = await CompanyModel.create({
-        company_code:      'COM-001',
-        name:              process.env.SUPER_ADMIN_COMPANY_NAME || 'EzyEnquiry Pvt Ltd',
-        owner_name:        process.env.SUPER_ADMIN_NAME         || 'Super Admin',
-        biz_type:          'Wholesaler',
-        mobile:            '9000000000',
-        email:             email,
-        subscription_plan: 'Platinum',
-        status:            'Approved',
-      })
-      console.log('[Seed] ✓ Default company created — EzyEnquiry Pvt Ltd')
-    }
-
-    // ── Create Super Admin user linked to company ─────────────
-    const password = process.env.SUPER_ADMIN_PASSWORD || 'ezyenquiry@123'
-    const hash     = await bcrypt.hash(password, 12)
-
-    await UserModel.create({
-      name:          process.env.SUPER_ADMIN_NAME || 'Super Admin',
-      email,
-      mobile:        '9000000000',
-      password_hash: hash,
-      role:          'Super Admin',
-      company_id:    company._id,
-      is_active:     true,
-    })
-    console.log(`[Seed] ✓ Super Admin created — ${email}`)
-  } catch (err) {
-    console.error('[Seed] ✗ Failed to seed Super Admin:', err.message)
-  }
-}
-
-/**
- * Assigns a company_id to any user record that is missing one.
- * Runs on every boot — safe to run multiple times (idempotent).
- * This heals users that were created before company association was enforced.
- */
-async function healOrphanUsers() {
-  try {
-    const { UserModel }    = require('./models/User')
-    const { CompanyModel } = require('./models/Company')
-
-    // Find the first (oldest) company to use as the default fallback
-    const company = await CompanyModel.findOne({}).sort({ created_at: 1 }).lean()
-    if (!company) return // No company yet — nothing to heal
-
-    // Fix users with missing or null company_id
-    const r1 = await UserModel.updateMany(
-      { company_id: { $exists: false } },
-      { $set: { company_id: company._id } }
-    )
-    const r2 = await UserModel.updateMany(
-      { company_id: null },
-      { $set: { company_id: company._id } }
-    )
-    const total = r1.modifiedCount + r2.modifiedCount
-    if (total > 0) {
-      console.log(`[Heal] ✓ Linked ${total} orphan user(s) to company "${company.name}"`)
-    }
-  } catch (err) {
-    console.error('[Heal] ✗ Failed to heal orphan users:', err.message)
-  }
-}
 
 module.exports = app
