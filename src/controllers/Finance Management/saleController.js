@@ -41,9 +41,12 @@ async function createSale(req, res) {
   const sale = await Sale.create({
     ...req.body,
     sale_code,
-    company_id: req.user.company_id,
-    amount, gst_amount, total_amount,
-    payment_status: 'Pending',
+    company_id:     req.user.company_id,
+    amount,
+    gst_amount,
+    total_amount,
+    payment_status: req.body.payment_status || 'Pending',
+    sale_date:      req.body.sale_date      || new Date(),
   });
   sendSuccess(res, sale, 'Sale entry created.', 201);
 }

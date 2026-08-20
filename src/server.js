@@ -24,6 +24,7 @@ const { authenticate,
 // ── Routes ───────────────────────────────────────────────────
 const authRoutes         = require('./routes/authRoutes')
 const companyRoutes      = require('./routes/Company Management/companyRoutes')
+const branchRoutes       = require('./routes/Company Management/branchRoutes')
 const userRoutes         = require('./routes/User Management/userRoutes')
 const categoryRoutes     = require('./routes/Product Management/categoryRoutes')
 const brandRoutes        = require('./routes/Product Management/brandRoutes')
@@ -38,15 +39,24 @@ const customerRoutes     = require('./routes/CRM Management/customerRoutes')
 const leadRoutes         = require('./routes/CRM Management/leadRoutes')
 const followupRoutes     = require('./routes/CRM Management/followupRoutes')
 const purchaseRoutes     = require('./routes/Purchase & Inventory Management/purchaseRoutes')
+const stockTransferRoutes = require('./routes/Purchase & Inventory Management/stockTransferRoutes')
 const salesRoutes        = require('./routes/Finance Management/salesRoutes')
 const expenseRoutes      = require('./routes/Finance Management/expenseRoutes')
 const paymentRoutes      = require('./routes/Finance Management/paymentRoutes')
-const employeeRoutes     = require('./routes/HR Management/employeeRoutes')
+const accountsRoutes     = require('./routes/Finance Management/accountsRoutes')
+const profitLossRoutes   = require('./routes/Finance Management/profitLossRoutes')
+const employeeRoutes        = require('./routes/HR Management/employeeRoutes')
+const employeeMasterRoutes  = require('./routes/HR Management/employeeMasterRoutes')
+const attendanceRoutes      = require('./routes/HR Management/attendanceRoutes')
+const salaryRoutes          = require('./routes/HR Management/salaryRoutes')
 const reportRoutes       = require('./routes/Reports Management/reportRoutes')
+const dashboardRoutes    = require('./routes/Reports Management/dashboardRoutes')
 const notificationRoutes = require('./routes/System Management/notificationRoutes')
 const documentRoutes     = require('./routes/System Management/documentRoutes')
 const subscriptionRoutes = require('./routes/System Management/subscriptionRoutes')
+const profileRoutes      = require('./routes/System Management/profileRoutes')
 const quotationRoutes    = require('./routes/Finance Management/quotationRoutes')
+const invoiceRoutes      = require('./routes/Finance Management/invoiceRoutes')
 
 // ────────────────────────────────────────────────────────────
 const app  = express()
@@ -84,6 +94,8 @@ app.use('/api/auth', authRoutes)
 
 // ── Protected Routes ──────────────────────────────────────────
 app.use('/api/companies',     authenticate, companyRoutes)
+app.use('/api/companies',     authenticate, branchRoutes)   // /api/companies/:companyId/branches
+app.use('/api/branches',      authenticate, requireCompany, branchRoutes) // standalone branch access
 app.use('/api/users',         authenticate, requireCompany, userRoutes)
 
 // ── Product & Inventory ───────────────────────────────────────
@@ -107,21 +119,30 @@ app.use('/api/followups',     authenticate, requireCompany, followupRoutes)
 
 // ── Finance ───────────────────────────────────────────────────
 app.use('/api/purchases',     authenticate, requireCompany, purchaseRoutes)
+app.use('/api/stock-transfers', authenticate, requireCompany, stockTransferRoutes)
 app.use('/api/sales',         authenticate, requireCompany, salesRoutes)
 app.use('/api/expenses',      authenticate, requireCompany, expenseRoutes)
 app.use('/api/payments',      authenticate, requireCompany, paymentRoutes)
+app.use('/api/accounts',      authenticate, requireCompany, accountsRoutes)
+app.use('/api/profit-loss',   authenticate, requireCompany, profitLossRoutes)
 app.use('/api/quotations',    authenticate, requireCompany, quotationRoutes)
+app.use('/api/invoices',      authenticate, requireCompany, invoiceRoutes)
 
 // ── HR ────────────────────────────────────────────────────────
-app.use('/api/employees',     authenticate, requireCompany, employeeRoutes)
+app.use('/api/employees',        authenticate, requireCompany, employeeRoutes)
+app.use('/api/employee-master',  authenticate, requireCompany, employeeMasterRoutes)
+app.use('/api/attendance',       authenticate, requireCompany, attendanceRoutes)
+app.use('/api/salary',           authenticate, requireCompany, salaryRoutes)
 
 // ── Reports & Analytics ───────────────────────────────────────
-app.use('/api/reports',       authenticate, requireCompany, reportRoutes)
+app.use('/api/reports/dashboard', authenticate, requireCompany, dashboardRoutes)
+app.use('/api/reports',           authenticate, requireCompany, reportRoutes)
 
 // ── System ────────────────────────────────────────────────────
 app.use('/api/notifications', authenticate, requireCompany, notificationRoutes)
 app.use('/api/documents',     authenticate, requireCompany, documentRoutes)
 app.use('/api/subscriptions', authenticate, requireCompany, subscriptionRoutes)
+app.use('/api/profile',       authenticate, profileRoutes)
 
 // ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {

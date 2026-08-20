@@ -2,6 +2,22 @@ const { sendSuccess, sendError } = require('../../utils/helpers');
 const Subscription = require('../../models/System Management/Subscription');
 const Company      = require('../../models/Company Management/Company');
 
+/** GET /api/subscriptions/current — active subscription for this company */
+async function getCurrentSubscription(req, res) {
+  const sub = await Subscription.findOne({
+    company_id: req.user.company_id,
+    status: 'Active',
+  }).sort({ created_at: -1 }).lean();
+
+  const company = await Company.findById(req.user.company_id).select('subscription_plan name').lean();
+
+  sendSuccess(res, {
+    subscription: sub || null,
+    plan: company?.subscription_plan || 'Free',
+    company_name: company?.name || '',
+  });
+}
+
 /** GET /api/subscriptions */
 async function listSubscriptions(req, res) {
   const subs = await Subscription.find({ company_id: req.user.company_id })
@@ -40,4 +56,4 @@ async function cancelSubscription(req, res) {
   sendSuccess(res, sub, 'Subscription cancelled.');
 }
 
-module.exports = { listSubscriptions, createSubscription, cancelSubscription };
+module.exports = { getCurrentSubscription, listSubscriptions, createSubscription, cancelSubscription };

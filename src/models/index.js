@@ -18,6 +18,7 @@ const Lead          = require('./CRM Management/Lead')
 const Followup      = require('./CRM Management/Followup')
 const Sale          = require('./Finance Management/Sale')
 const Expense       = require('./Finance Management/Expense')
+const Invoice       = require('./Finance Management/Invoice')
 const Receivable    = require('./Finance Management/Receivable')
 const Payable       = require('./Finance Management/Payable')
 const Transaction   = require('./Finance Management/Transaction')
@@ -48,6 +49,7 @@ module.exports = {
   Followup,
   Sale,
   Expense,
+  Invoice,
   Receivable,
   Payable,
   Transaction,

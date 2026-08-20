@@ -112,6 +112,16 @@ async function updateEnquiry(req, res) {
   if (req.body.offered_price     !== undefined)            update.offered_price     = req.body.offered_price;
   if (req.body.remarks           !== undefined)            update.remarks           = req.body.remarks;
   if (req.body.order_id)                                   update.order_id          = req.body.order_id;
+  // Allow editing retailer details
+  if (req.body.retailer_name    !== undefined)             update.retailer_name     = req.body.retailer_name;
+  if (req.body.retailer_mobile  !== undefined)             update.retailer_mobile   = req.body.retailer_mobile;
+  if (req.body.retailer_email   !== undefined)             update.retailer_email    = req.body.retailer_email;
+  if (req.body.product_id       !== undefined)             update.product_id        = req.body.product_id || null;
+  if (req.body.product_code     !== undefined)             update.product_code      = req.body.product_code;
+  if (req.body.product_name     !== undefined)             update.product_name      = req.body.product_name;
+  if (req.body.qty              !== undefined)             update.qty               = req.body.qty;
+  if (req.body.unit             !== undefined)             update.unit              = req.body.unit;
+  if (req.body.location         !== undefined)             update.location          = req.body.location;
 
   const enq = await Enquiry.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },
@@ -124,9 +134,19 @@ async function updateEnquiry(req, res) {
 
 /** DELETE /api/enquiries/:id */
 async function deleteEnquiry(req, res) {
-  const result = await Enquiry.deleteOne({ _id: req.params.id, company_id: req.user.company_id });
-  if (result.deletedCount === 0) return sendError(res, 'Enquiry not found.', 404);
-  sendSuccess(res, null, 'Enquiry deleted.');
+  const enq = await Enquiry.findOne({ _id: req.params.id, company_id: req.user.company_id }).lean();
+  if (!enq) return sendError(res, 'Enquiry not found.', 404);
+
+  // ── Cascade: delete the linked order if it exists ───────────
+  if (enq.order_id) {
+    const Order = require('../../models/Marketplace Management/Order');
+    await Order.deleteOne({ _id: enq.order_id, company_id: req.user.company_id });
+  }
+
+  await Enquiry.deleteOne({ _id: req.params.id, company_id: req.user.company_id });
+
+  // Return the deleted order_id so frontend can remove it from state
+  sendSuccess(res, { deleted_order_id: enq.order_id || null }, 'Enquiry deleted.');
 }
 
 module.exports = { listEnquiries, enquiryStats, getEnquiry, createEnquiry, updateEnquiry, deleteEnquiry };

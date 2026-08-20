@@ -8,7 +8,7 @@ const leadSchema = new mongoose.Schema(
     email:                 { type: String, default: '' },
     source:                { type: String, default: '' },
     notes:                 { type: String, default: '' },
-    status:                { type: String, enum: ['New', 'Contacted', 'Qualified', 'Converted', 'Lost'], default: 'New' },
+    status:                { type: String, enum: ['New', 'Follow-up', 'Interested', 'Not Interested', 'Converted'], default: 'New' },
     assigned_to:           { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     converted_customer_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', default: null },
   },

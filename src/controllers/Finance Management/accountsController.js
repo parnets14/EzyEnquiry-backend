@@ -75,4 +75,83 @@ async function getSupplierLedger(req, res) {
   sendSuccess(res, { supplier, ledger: ledgerWithBalance, closingBalance: running });
 }
 
-module.exports = { getCustomerLedger, getSupplierLedger };
+/** GET /api/accounts/cash-book
+ *  Daily cash flow — all Cash-mode income and expense transactions
+ */
+async function getCashBook(req, res) {
+  const cid      = new mongoose.Types.ObjectId(req.user.company_id.toString());
+  const fromDate = req.query.from_date ? new Date(req.query.from_date) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const toDate   = req.query.to_date   ? new Date(req.query.to_date)   : new Date();
+  toDate.setHours(23, 59, 59, 999);
+
+  const [cashIn, cashOut, expenses] = await Promise.all([
+    // Cash received from customers
+    Transaction.find({ company_id: cid, type: 'Received', mode: 'Cash', txn_date: { $gte: fromDate, $lte: toDate } })
+      .select('txn_code txn_date amount party_name notes')
+      .sort({ txn_date: 1 }).lean(),
+    // Cash paid to suppliers
+    Transaction.find({ company_id: cid, type: 'Paid', mode: 'Cash', txn_date: { $gte: fromDate, $lte: toDate } })
+      .select('txn_code txn_date amount party_name notes')
+      .sort({ txn_date: 1 }).lean(),
+    // Cash expenses
+    Expense.find({ company_id: cid, payment_mode: 'Cash', expense_date: { $gte: fromDate, $lte: toDate } })
+      .select('category amount description expense_date')
+      .sort({ expense_date: 1 }).lean(),
+  ]);
+
+  const entries = [
+    ...cashIn.map(r    => ({ date: r.txn_date,     type: 'Receipt',  description: `Received from ${r.party_name}`, debit: r.amount, credit: 0 })),
+    ...cashOut.map(r   => ({ date: r.txn_date,     type: 'Payment',  description: `Paid to ${r.party_name}`,       debit: 0, credit: r.amount })),
+    ...expenses.map(r  => ({ date: r.expense_date, type: 'Expense',  description: `${r.category}: ${r.description}`, debit: 0, credit: r.amount })),
+  ].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  let balance = 0;
+  const withBalance = entries.map(row => {
+    balance += parseFloat(row.debit) - parseFloat(row.credit);
+    return { ...row, balance };
+  });
+
+  const totalIn  = cashIn.reduce((s, r)   => s + r.amount, 0);
+  const totalOut = cashOut.reduce((s, r)  => s + r.amount, 0) + expenses.reduce((s, r) => s + r.amount, 0);
+
+  sendSuccess(res, { period: { from: fromDate, to: toDate }, entries: withBalance, totalIn, totalOut, closingBalance: balance });
+}
+
+/** GET /api/accounts/bank-book
+ *  Bank transactions — non-cash receipts and payments
+ */
+async function getBankBook(req, res) {
+  const cid      = new mongoose.Types.ObjectId(req.user.company_id.toString());
+  const fromDate = req.query.from_date ? new Date(req.query.from_date) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const toDate   = req.query.to_date   ? new Date(req.query.to_date)   : new Date();
+  toDate.setHours(23, 59, 59, 999);
+
+  const BANK_MODES = { $in: ['Bank Transfer', 'UPI', 'Cheque', 'NEFT', 'RTGS', 'IMPS'] };
+
+  const [bankIn, bankOut] = await Promise.all([
+    Transaction.find({ company_id: cid, type: 'Received', mode: BANK_MODES, txn_date: { $gte: fromDate, $lte: toDate } })
+      .select('txn_code txn_date amount mode party_name reference notes')
+      .sort({ txn_date: 1 }).lean(),
+    Transaction.find({ company_id: cid, type: 'Paid', mode: BANK_MODES, txn_date: { $gte: fromDate, $lte: toDate } })
+      .select('txn_code txn_date amount mode party_name reference notes')
+      .sort({ txn_date: 1 }).lean(),
+  ]);
+
+  const entries = [
+    ...bankIn.map(r  => ({ date: r.txn_date, type: 'Credit', mode: r.mode, description: `Received from ${r.party_name}`, ref: r.reference, debit: r.amount,  credit: 0 })),
+    ...bankOut.map(r => ({ date: r.txn_date, type: 'Debit',  mode: r.mode, description: `Paid to ${r.party_name}`,       ref: r.reference, debit: 0, credit: r.amount })),
+  ].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  let balance = 0;
+  const withBalance = entries.map(row => {
+    balance += parseFloat(row.debit) - parseFloat(row.credit);
+    return { ...row, balance };
+  });
+
+  const totalIn  = bankIn.reduce((s, r)  => s + r.amount, 0);
+  const totalOut = bankOut.reduce((s, r) => s + r.amount, 0);
+
+  sendSuccess(res, { period: { from: fromDate, to: toDate }, entries: withBalance, totalIn, totalOut, closingBalance: balance });
+}
+
+module.exports = { getCustomerLedger, getSupplierLedger, getCashBook, getBankBook };

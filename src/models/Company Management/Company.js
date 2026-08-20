@@ -22,6 +22,13 @@ const companySchema = new mongoose.Schema(
     docs_pan:          { type: Boolean, default: false },
     docs_address:      { type: Boolean, default: false },
     docs_biz:          { type: Boolean, default: false },
+
+    // ── Document file URLs ────────────────────────────────
+    doc_gst_url:      { type: String, default: '' },   // GST Certificate file path
+    doc_pan_url:      { type: String, default: '' },   // PAN Card file path
+    doc_reg_url:      { type: String, default: '' },   // Business Registration
+    doc_trade_url:    { type: String, default: '' },   // Trade License
+    logo_url:         { type: String, default: '' },   // Company Logo
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 )

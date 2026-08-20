@@ -3,11 +3,12 @@ const Document = require('../../models/System Management/Document');
 
 /** GET /api/documents */
 async function listDocuments(req, res) {
-  const { entity_type, entity_id, page = 1, limit = 30 } = req.query;
+  const { entity_type, entity_id, doc_type, page = 1, limit = 30 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
   const query  = { company_id: req.user.company_id };
   if (entity_type) query.entity_type = entity_type;
   if (entity_id)   query.entity_id   = entity_id;
+  if (doc_type)    query.doc_type    = doc_type;
 
   const [total, documents] = await Promise.all([
     Document.countDocuments(query),
