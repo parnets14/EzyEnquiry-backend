@@ -11,34 +11,49 @@ function generateOtp() {
 
 /** Store OTP hash in DB */
 async function storeOtp(target, otp, purpose = 'login', type = 'email') {
-  const hash      = await bcrypt.hash(otp, 10)
-  const expiresAt = new Date(Date.now() + OTP_EXPIRES * 60 * 1000)
+  const normalised = String(target).trim()
+  const hash       = await bcrypt.hash(otp, 10)
+  const expiresAt  = new Date(Date.now() + OTP_EXPIRES * 60 * 1000)
 
   // Invalidate previous unused OTPs for same target + purpose
   await OtpStore.updateMany(
-    { target, purpose, used: false },
+    { target: normalised, purpose, used: false },
     { used: true }
   )
 
-  await OtpStore.create({ target, type, otp_hash: hash, purpose, expires_at: expiresAt })
+  await OtpStore.create({ target: normalised, type, otp_hash: hash, purpose, expires_at: expiresAt })
   return otp
 }
 
 /** Verify OTP */
 async function verifyOtp(target, otp, purpose = 'login') {
+  const normalised = String(target).trim()
+  const otpStr     = String(otp).trim()
+
+  // Debug: log what we're looking for
+  console.log(`[OTP Verify] target="${normalised}" otp="${otpStr}" purpose="${purpose}"`)
+
   const record = await OtpStore.findOne({
-    target,
+    target:     normalised,
     purpose,
-    used: false,
+    used:       false,
     expires_at: { $gt: new Date() },
   }).sort({ created_at: -1 })
 
-  if (!record) return { valid: false, reason: 'OTP expired or not found' }
+  if (!record) {
+    console.log(`[OTP Verify] No valid record found for target="${normalised}"`)
+    return { valid: false, reason: 'OTP expired or not found' }
+  }
 
-  const match = await bcrypt.compare(otp, record.otp_hash)
-  if (!match) return { valid: false, reason: 'Invalid OTP' }
+  console.log(`[OTP Verify] Record found, comparing hash...`)
+  const match = await bcrypt.compare(otpStr, record.otp_hash)
+  if (!match) {
+    console.log(`[OTP Verify] Hash mismatch for target="${normalised}"`)
+    return { valid: false, reason: 'Invalid OTP' }
+  }
 
   await OtpStore.findByIdAndUpdate(record._id, { used: true })
+  console.log(`[OTP Verify] SUCCESS for target="${normalised}"`)
   return { valid: true }
 }
 

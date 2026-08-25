@@ -57,6 +57,7 @@ const subscriptionRoutes = require('./routes/System Management/subscriptionRoute
 const profileRoutes      = require('./routes/System Management/profileRoutes')
 const quotationRoutes    = require('./routes/Finance Management/quotationRoutes')
 const invoiceRoutes      = require('./routes/Finance Management/invoiceRoutes')
+const wholesalerAuthRoutes = require('./routes/Wholesaler Management/wholesalerAuthRoutes')
 
 // ────────────────────────────────────────────────────────────
 const app  = express()
@@ -69,6 +70,11 @@ app.use(cors({
   origin: [
     process.env.FRONTEND_URL || 'http://localhost:5173',
     'http://localhost:3000',
+    'http://10.67.41.163:5173',   // frontend on this machine
+    'http://10.67.41.163',        // mobile device
+    'http://10.67.41.163:8081',   // React Native Metro dev server on device
+    'http://192.168.1.8',        // alternate device IP
+    'http://192.168.1.8:8081',
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -90,7 +96,8 @@ app.get('/health', (_req, res) => {
 })
 
 // ── Public Routes ─────────────────────────────────────────────
-app.use('/api/auth', authRoutes)
+app.use('/api/auth',              authRoutes)
+app.use('/api/wholesaler/auth',   wholesalerAuthRoutes)
 
 // ── Protected Routes ──────────────────────────────────────────
 app.use('/api/companies',     authenticate, companyRoutes)

@@ -1,5 +1,7 @@
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers')
-const Company = require('../../models/Company Management/Company')
+const Company      = require('../../models/Company Management/Company')
+const User         = require('../../models/User Management/User')
+const Notification = require('../../models/System Management/Notification')
 
 // ── Helper: generate next company code ───────────────────────
 async function getNextCompanyCode() {
@@ -20,10 +22,30 @@ async function listCompanies(req, res) {
 
   const [total, companies] = await Promise.all([
     Company.countDocuments(query),
-    Company.find(query).sort({ created_at: -1 }).skip(offset).limit(parseInt(limit)).lean(),
+    Company.find(query)
+      .populate('reviewed_by', 'name')
+      .sort({ created_at: -1 })
+      .skip(offset)
+      .limit(parseInt(limit))
+      .lean(),
   ])
 
-  sendSuccess(res, { companies, pagination: paginate(total, parseInt(page), parseInt(limit)) })
+  // Attach owner user info to each company
+  const companyIds = companies.map(c => c._id)
+  const owners = await User.find({
+    company_id: { $in: companyIds },
+    role: 'Company Owner',
+  }).select('company_id name mobile email').lean()
+
+  const ownerMap = {}
+  owners.forEach(o => { ownerMap[o.company_id.toString()] = o })
+
+  const enriched = companies.map(c => ({
+    ...c,
+    owner_user: ownerMap[c._id.toString()] || null,
+  }))
+
+  sendSuccess(res, { companies: enriched, pagination: paginate(total, parseInt(page), parseInt(limit)) })
 }
 
 /** GET /api/companies/:id */
@@ -88,7 +110,27 @@ async function approveCompany(req, res) {
     { new: true }
   ).lean()
   if (!company) return sendError(res, 'Company not found.', 404)
-  sendSuccess(res, company, 'Company approved.')
+
+  // Ensure all users of this company are active
+  await User.updateMany({ company_id: company._id }, { is_active: true })
+
+  // Find the company owner to send notification
+  const owner = await User.findOne({ company_id: company._id, role: 'Company Owner' }).lean()
+
+  // Create in-app notification for the company owner
+  if (owner) {
+    await Notification.create({
+      company_id:   company._id,
+      user_id:      owner._id,
+      type:         'approval',
+      title:        '🎉 Account Approved!',
+      message:      `Congratulations! Your company "${company.name}" has been approved by admin. You can now access all features of EzyEnquiry.`,
+      reference_id: company._id,
+      is_read:      false,
+    }).catch(() => {})  // non-fatal
+  }
+
+  sendSuccess(res, company, 'Company approved successfully.')
 }
 
 /** PATCH /api/companies/:id/reject */
@@ -100,6 +142,21 @@ async function rejectCompany(req, res) {
     { new: true }
   ).lean()
   if (!company) return sendError(res, 'Company not found.', 404)
+
+  // Find owner and notify about rejection
+  const owner = await User.findOne({ company_id: company._id, role: 'Company Owner' }).lean()
+  if (owner) {
+    await Notification.create({
+      company_id:   company._id,
+      user_id:      owner._id,
+      type:         'rejection',
+      title:        '❌ Application Rejected',
+      message:      `Your company registration has been rejected. Reason: ${reject_reason || 'Not specified'}. Please contact support for more information.`,
+      reference_id: company._id,
+      is_read:      false,
+    }).catch(() => {})
+  }
+
   sendSuccess(res, company, 'Company rejected.')
 }
 
