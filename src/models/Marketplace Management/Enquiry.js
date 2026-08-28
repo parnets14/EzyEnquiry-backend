@@ -4,6 +4,9 @@ const enquirySchema = new mongoose.Schema(
   {
     enq_code:          { type: String, default: '' },
     company_id:        { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
+    buyer_company_id:  { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null },
+    buyer_user_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    seller_company_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null },
     retailer_name:     { type: String, required: true },
     retailer_mobile:   { type: String, default: '' },
     retailer_email:    { type: String, default: '' },
@@ -25,5 +28,7 @@ const enquirySchema = new mongoose.Schema(
 );
 
 enquirySchema.index({ company_id: 1, status: 1 });
+enquirySchema.index({ buyer_company_id: 1, buyer_user_id: 1, created_at: -1 });
+enquirySchema.index({ seller_company_id: 1, status: 1 });
 
 module.exports = mongoose.model('Enquiry', enquirySchema);

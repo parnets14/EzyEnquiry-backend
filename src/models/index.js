@@ -11,6 +11,8 @@ const Inventory     = require('./Purchase & Inventory Management/Inventory')
 const StockTransfer = require('./Purchase & Inventory Management/StockTransfer')
 const StockMovement = require('./Purchase & Inventory Management/StockMovement')
 const Enquiry       = require('./Marketplace Management/Enquiry')
+const EnquiryOffer  = require('./Marketplace Management/EnquiryOffer')
+const EnquiryMessage= require('./Marketplace Management/EnquiryMessage')
 const Order         = require('./Marketplace Management/Order')
 const Dispatch      = require('./Marketplace Management/Dispatch')
 const Customer      = require('./CRM Management/Customer')
@@ -42,6 +44,8 @@ module.exports = {
   StockTransfer,
   StockMovement,
   Enquiry,
+  EnquiryOffer,
+  EnquiryMessage,
   Order,
   Dispatch,
   Customer,

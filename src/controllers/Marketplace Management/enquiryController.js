@@ -93,6 +93,13 @@ async function createEnquiry(req, res) {
 /** PATCH /api/enquiries/:id */
 async function updateEnquiry(req, res) {
   const REPLY_STATUSES = ['Viewed', 'Replied', 'Negotiation', 'Confirmed', 'Cancelled'];
+  const existing = await Enquiry.findOne({ _id: req.params.id, company_id: req.user.company_id })
+    .select('buyer_company_id')
+    .lean();
+  if (!existing) return sendError(res, 'Enquiry not found.', 404);
+  if (existing.buyer_company_id) {
+    return sendError(res, 'Use the marketplace offer or message endpoint for retailer enquiries.', 409);
+  }
 
   // Enforce role for wholesaler-action statuses
   if (req.body.status && REPLY_STATUSES.includes(req.body.status)) {
@@ -136,6 +143,9 @@ async function updateEnquiry(req, res) {
 async function deleteEnquiry(req, res) {
   const enq = await Enquiry.findOne({ _id: req.params.id, company_id: req.user.company_id }).lean();
   if (!enq) return sendError(res, 'Enquiry not found.', 404);
+  if (enq.buyer_company_id) {
+    return sendError(res, 'Retailer marketplace enquiries cannot be hard-deleted.', 409);
+  }
 
   // ── Cascade: delete the linked order if it exists ───────────
   if (enq.order_id) {

@@ -25,13 +25,10 @@ async function storeOtp(target, otp, purpose = 'login', type = 'email') {
   return otp
 }
 
-/** Verify OTP */
+/** Verify OTP without exposing submitted or generated values in logs. */
 async function verifyOtp(target, otp, purpose = 'login') {
   const normalised = String(target).trim()
   const otpStr     = String(otp).trim()
-
-  // Debug: log what we're looking for
-  console.log(`[OTP Verify] target="${normalised}" otp="${otpStr}" purpose="${purpose}"`)
 
   const record = await OtpStore.findOne({
     target:     normalised,
@@ -40,20 +37,12 @@ async function verifyOtp(target, otp, purpose = 'login') {
     expires_at: { $gt: new Date() },
   }).sort({ created_at: -1 })
 
-  if (!record) {
-    console.log(`[OTP Verify] No valid record found for target="${normalised}"`)
-    return { valid: false, reason: 'OTP expired or not found' }
-  }
+  if (!record) return { valid: false, reason: 'OTP expired or not found' }
 
-  console.log(`[OTP Verify] Record found, comparing hash...`)
   const match = await bcrypt.compare(otpStr, record.otp_hash)
-  if (!match) {
-    console.log(`[OTP Verify] Hash mismatch for target="${normalised}"`)
-    return { valid: false, reason: 'Invalid OTP' }
-  }
+  if (!match) return { valid: false, reason: 'Invalid OTP' }
 
   await OtpStore.findByIdAndUpdate(record._id, { used: true })
-  console.log(`[OTP Verify] SUCCESS for target="${normalised}"`)
   return { valid: true }
 }
 

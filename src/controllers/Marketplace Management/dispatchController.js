@@ -4,6 +4,7 @@ const Order        = require('../../models/Marketplace Management/Order');
 const Sale         = require('../../models/Finance Management/Sale');
 const Receivable   = require('../../models/Finance Management/Receivable');
 const Notification = require('../../models/System Management/Notification');
+const { notifyRetailer } = require('../../utils/pushHelper');
 
 /** GET /api/dispatches */
 async function listDispatches(req, res) {
@@ -97,6 +98,16 @@ async function createDispatch(req, res) {
     message:      `Order ${order.order_code} dispatched via ${req.body.transport_name || '—'} LR: ${req.body.lr_number || '—'}`,
     reference_id: dispatch._id,
   });
+
+  // Push notification to retailer buyer if this is a marketplace order
+  if (order.buyer_user_id) {
+    notifyRetailer(order.buyer_user_id, {
+      title: `Order ${order.order_code} Dispatched!`,
+      body: `Your order has been dispatched via ${req.body.transport_name || 'transport'}. LR: ${req.body.lr_number || '—'}`,
+      type: 'dispatch',
+      referenceId: order._id,
+    });
+  }
 
   sendSuccess(res, dispatch, 'Dispatch created.', 201);
 }
@@ -206,6 +217,16 @@ async function markDelivered(req, res) {
       message:      `Delivered to ${order.customer_name}. Sale & receivable auto-created.`,
       reference_id: order._id,
     });
+
+    // Push notification to retailer buyer
+    if (order.buyer_user_id) {
+      notifyRetailer(order.buyer_user_id, {
+        title: `Order ${order.order_code} Delivered!`,
+        body: `Your order has been delivered successfully.`,
+        type: 'delivery',
+        referenceId: order._id,
+      });
+    }
   }
 
   sendSuccess(res, dispatch, 'Marked as delivered. Sale auto-created.');

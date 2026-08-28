@@ -2,6 +2,7 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers')
 const Company      = require('../../models/Company Management/Company')
 const User         = require('../../models/User Management/User')
 const Notification = require('../../models/System Management/Notification')
+const { notifyRetailer } = require('../../utils/pushHelper')
 
 // ── Helper: generate next company code ───────────────────────
 async function getNextCompanyCode() {
@@ -115,7 +116,7 @@ async function approveCompany(req, res) {
   await User.updateMany({ company_id: company._id }, { is_active: true })
 
   // Find the company owner to send notification
-  const owner = await User.findOne({ company_id: company._id, role: 'Company Owner' }).lean()
+  const owner = await User.findOne({ company_id: company._id, role: { $in: ['Company Owner', 'Retailer'] } }).lean()
 
   // Create in-app notification for the company owner
   if (owner) {
@@ -128,6 +129,14 @@ async function approveCompany(req, res) {
       reference_id: company._id,
       is_read:      false,
     }).catch(() => {})  // non-fatal
+
+    // Send push notification to retailer
+    notifyRetailer(owner._id, {
+      title: 'Account Approved!',
+      body: `Your company "${company.name}" has been approved. You can now access all features.`,
+      type: 'approval',
+      referenceId: company._id,
+    })
   }
 
   sendSuccess(res, company, 'Company approved successfully.')
@@ -144,7 +153,7 @@ async function rejectCompany(req, res) {
   if (!company) return sendError(res, 'Company not found.', 404)
 
   // Find owner and notify about rejection
-  const owner = await User.findOne({ company_id: company._id, role: 'Company Owner' }).lean()
+  const owner = await User.findOne({ company_id: company._id, role: { $in: ['Company Owner', 'Retailer'] } }).lean()
   if (owner) {
     await Notification.create({
       company_id:   company._id,
@@ -155,6 +164,14 @@ async function rejectCompany(req, res) {
       reference_id: company._id,
       is_read:      false,
     }).catch(() => {})
+
+    // Send push notification to retailer
+    notifyRetailer(owner._id, {
+      title: 'Application Rejected',
+      body: `Your registration was rejected. Reason: ${reject_reason || 'Not specified'}.`,
+      type: 'rejection',
+      referenceId: company._id,
+    })
   }
 
   sendSuccess(res, company, 'Company rejected.')
@@ -163,20 +180,41 @@ async function rejectCompany(req, res) {
 /** PATCH /api/companies/:id/docs */
 async function updateDocs(req, res) {
   const { docs_gst, docs_pan, docs_address, docs_biz } = req.body
-  const company = await Company.findByIdAndUpdate(
-    req.params.id,
-    { docs_gst: !!docs_gst, docs_pan: !!docs_pan, docs_address: !!docs_address, docs_biz: !!docs_biz },
-    { new: true }
-  ).lean()
+  const company = await Company.findById(req.params.id)
   if (!company) return sendError(res, 'Company not found.', 404)
-  sendSuccess(res, company, 'Documents updated.')
+
+  company.docs_gst = !!docs_gst
+  company.docs_pan = !!docs_pan
+  company.docs_address = !!docs_address
+  company.docs_biz = !!docs_biz
+
+  const approvals = {
+    gst: company.docs_gst,
+    pan: company.docs_pan,
+    registration: company.docs_address,
+    trade: company.docs_biz,
+  }
+  for (const document of company.kyc_documents || []) {
+    document.status = approvals[document.document_type] ? 'Approved' : 'Pending'
+    document.reject_reason = ''
+    document.reviewed_at = approvals[document.document_type] ? new Date() : null
+  }
+
+  await company.save()
+  sendSuccess(res, company.toObject(), 'Documents updated.')
 }
 
 /** DELETE /api/companies/:id */
 async function deleteCompany(req, res) {
-  const result = await Company.deleteOne({ _id: req.params.id })
-  if (result.deletedCount === 0) return sendError(res, 'Company not found.', 404)
-  sendSuccess(res, null, 'Company deleted.')
+  const company = await Company.findById(req.params.id).lean()
+  if (!company) return sendError(res, 'Company not found.', 404)
+
+  // Delete all users associated with this company
+  await User.deleteMany({ company_id: company._id })
+  // Delete the company
+  await Company.deleteOne({ _id: company._id })
+
+  sendSuccess(res, null, 'Company and associated users deleted.')
 }
 
 module.exports = { listCompanies, getCompany, createCompany, updateCompany, approveCompany, rejectCompany, updateDocs, deleteCompany }

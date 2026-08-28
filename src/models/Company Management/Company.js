@@ -1,5 +1,25 @@
 const mongoose = require('mongoose')
 
+const addressSchema = new mongoose.Schema({
+  label:      { type: String, default: 'Delivery' },
+  contact_name: { type: String, default: '' },
+  mobile:     { type: String, default: '' },
+  address:    { type: String, required: true, trim: true },
+  city:       { type: String, required: true, trim: true },
+  state:      { type: String, required: true, trim: true },
+  pin_code:   { type: String, required: true, trim: true },
+  is_default: { type: Boolean, default: false },
+}, { timestamps: false })
+
+const kycDocumentSchema = new mongoose.Schema({
+  document_type: { type: String, enum: ['gst', 'pan', 'trade', 'registration'], required: true },
+  file_url:      { type: String, required: true },
+  status:        { type: String, enum: ['Pending', 'Approved', 'Rejected'], default: 'Pending' },
+  reject_reason: { type: String, default: '' },
+  uploaded_at:   { type: Date, default: Date.now },
+  reviewed_at:   { type: Date, default: null },
+}, { _id: false })
+
 const companySchema = new mongoose.Schema(
   {
     company_code:      { type: String, unique: true },
@@ -16,12 +36,15 @@ const companySchema = new mongoose.Schema(
     pin_code:          { type: String, default: '' },
     subscription_plan: { type: String, default: 'Free' },
     status:            { type: String, enum: ['Pending', 'Approved', 'Rejected'], default: 'Pending' },
+    is_active:         { type: Boolean, default: true },
     reject_reason:     { type: String, default: '' },
     reviewed_by:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     docs_gst:          { type: Boolean, default: false },
     docs_pan:          { type: Boolean, default: false },
     docs_address:      { type: Boolean, default: false },
     docs_biz:          { type: Boolean, default: false },
+    addresses:         { type: [addressSchema], default: [] },
+    kyc_documents:     { type: [kycDocumentSchema], default: [] },
 
     // ── Document file URLs ────────────────────────────────
     doc_gst_url:      { type: String, default: '' },   // GST Certificate file path

@@ -55,6 +55,9 @@ router.post('/send-otp', authRateLimiter, ctrl.sendOtpHandler)
 // Verify OTP → returns JWT token on success
 router.post('/verify-otp', authRateLimiter, ctrl.verifyOtpHandler)
 
+// Password-based login → returns JWT token on success
+router.post('/login', authRateLimiter, ctrl.loginPassword)
+
 // Register new wholesaler company (Step 1)
 router.post('/register', authRateLimiter, ctrl.register)
 
