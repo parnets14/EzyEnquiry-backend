@@ -6,6 +6,9 @@ const router = express.Router();
 // ── Auth (no auth required) ──────────────────────────────────
 router.use('/auth', require('./authRoutes'));
 
+// ── Staff App auth (no auth required) ────────────────────────
+router.use('/auth/staff', require('./Staff App Management/staffAuthRoutes'));
+
 // ── All routes below require authentication ──────────────────
 router.use(authenticate);
 

@@ -10,6 +10,7 @@ const customerSchema = new mongoose.Schema(
     address:      { type: String, default: '' },
     city:         { type: String, default: '' },
     state:        { type: String, default: '' },
+    pincode:      { type: String, default: '' },
     biz_type:     { type: String, default: 'Retailer' },
     credit_limit: { type: Number, default: 0 },
     is_active:    { type: Boolean, default: true },

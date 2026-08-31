@@ -189,6 +189,51 @@ async function verifyOtpHandler(req, res) {
 }
 
 /**
+ * POST /api/wholesaler/auth/login
+ * Password-based sign-in for the app.
+ * Body: { identifier, password }  — identifier is a 10-digit mobile OR email.
+ * Returns { token, user } on success.
+ */
+async function loginPassword(req, res) {
+  const identifier = String(req.body.identifier || req.body.mobile || req.body.email || '').trim()
+  const password   = String(req.body.password || '')
+
+  if (!identifier || !password) {
+    return sendError(res, 'Mobile/email and password are required.', 400)
+  }
+
+  // Look up by mobile if all digits, otherwise by email
+  const isMobile = /^\d{10}$/.test(identifier)
+  const query = isMobile
+    ? { mobile: identifier }
+    : { email: identifier.toLowerCase() }
+
+  const userDoc = await User.findOne(query).lean()
+
+  if (!userDoc) {
+    return sendError(res, 'No account found. Please check your details or register first.', 404)
+  }
+  if (!userDoc.is_active) {
+    return sendError(res, 'Your account has been deactivated. Contact support.', 403)
+  }
+  if (!userDoc.password_hash) {
+    return sendError(res, 'This account has no password set. Please use OTP login.', 400)
+  }
+
+  const valid = await bcrypt.compare(password, userDoc.password_hash)
+  if (!valid) {
+    return sendError(res, 'Invalid mobile/email or password.', 401)
+  }
+
+  await User.findByIdAndUpdate(userDoc._id, { last_login: new Date() })
+
+  const token = signToken(userDoc._id)
+  const user  = await buildUserResponse(userDoc)
+
+  return sendSuccess(res, { token, user }, 'Login successful.')
+}
+
+/**
  * POST /api/wholesaler/auth/register
  * Step 1 — Create Company + Company Owner
  * Body: { companyName, ownerName, mobile, email, businessType,
@@ -196,12 +241,12 @@ async function verifyOtpHandler(req, res) {
  */
 async function register(req, res) {
   const {
-    companyName, ownerName, mobile, email, businessType,
+    companyName, ownerName, mobile, email, businessType, password,
     gstNumber, panNumber, address, city, state, pincode,
   } = req.body
 
   // Required field validation
-  const required = { companyName, ownerName, mobile, email, businessType }
+  const required = { companyName, ownerName, mobile, email, businessType, password }
   for (const [field, val] of Object.entries(required)) {
     if (!val || String(val).trim() === '') {
       return sendError(res, `${field} is required.`, 400)
@@ -216,6 +261,9 @@ async function register(req, res) {
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
     return sendError(res, 'Please provide a valid email address.', 400)
+  }
+  if (String(password).length < 6) {
+    return sendError(res, 'Password must be at least 6 characters.', 400)
   }
 
   // Duplicate checks
@@ -246,13 +294,15 @@ async function register(req, res) {
     status:      'Pending',
   })
 
-  // Create Company Owner user — OTP-only login (no password)
+  // Create Company Owner user with a hashed password for sign-in
+  const password_hash = await bcrypt.hash(String(password), 12)
   const user = await User.create({
     company_id: company._id,
     name:       String(ownerName).trim(),
     email:      cleanEmail,
     mobile:     cleanMobile,
     role:       'Company Owner',
+    password_hash,
     is_active:  true,
   })
 
@@ -407,6 +457,7 @@ module.exports = {
   checkMobile,
   sendOtpHandler,
   verifyOtpHandler,
+  loginPassword,
   register,
   uploadDocs,
   me,

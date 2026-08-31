@@ -20,6 +20,8 @@ const { errorHandler }       = require('./middleware/errorHandler')
 const { rateLimiter }        = require('./middleware/rateLimiter')
 const { authenticate,
         requireCompany }     = require('./middleware/auth')
+const { requireRetailerIdentity,
+        denyRetailerErpAccess } = require('./middleware/retailerAccess')
 
 // ── Routes ───────────────────────────────────────────────────
 const authRoutes         = require('./routes/authRoutes')
@@ -57,9 +59,12 @@ const subscriptionRoutes = require('./routes/System Management/subscriptionRoute
 const profileRoutes      = require('./routes/System Management/profileRoutes')
 const quotationRoutes    = require('./routes/Finance Management/quotationRoutes')
 const invoiceRoutes      = require('./routes/Finance Management/invoiceRoutes')
-const wholesalerAuthRoutes      = require('./routes/Wholesaler Management/wholesalerAuthRoutes')
+const wholesalerAuthRoutes = require('./routes/Wholesaler Management/wholesalerAuthRoutes')
 const wholesalerProductRoutes   = require('./routes/Wholesaler Management/wholesalerProductRoutes')
 const wholesalerInventoryRoutes = require('./routes/Wholesaler Management/wholesalerInventoryRoutes')
+const retailerAuthRoutes   = require('./routes/Retailer Management/retailerAuthRoutes')
+const retailerRoutes       = require('./routes/Retailer Management/retailerRoutes')
+const staffAuthRoutes      = require('./routes/Staff App Management/staffAuthRoutes')
 
 // ────────────────────────────────────────────────────────────
 const app  = express()
@@ -75,7 +80,19 @@ const corsOrigin = process.env.NODE_ENV === 'production'
   : true // true = reflect any origin — safe for local dev
 
 app.use(cors({
-  origin: corsOrigin,
+  origin: [
+    process.env.FRONTEND_URL || 'http://localhost:5173',
+    'http://localhost:3000',
+    'http://10.67.41.163:5173',   // frontend on this machine
+    'http://10.67.41.163',        // mobile device
+    'http://10.67.41.163:8081',   // React Native Metro dev server on device
+    'http://192.168.1.8',        // alternate device IP
+    'http://192.168.1.8:8081',
+    'http://192.168.1.45',        // this machine (Wi-Fi) — retailer device
+    'http://192.168.1.45:5173',
+    'http://192.168.1.45:5000',
+    'http://192.168.1.45:8081',   // Metro dev server on device
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -85,6 +102,10 @@ app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 // ── Static Files ─────────────────────────────────────────────
+// KYC files are available only through authenticated retailer download routes.
+app.use('/uploads/kyc', (_req, res) => {
+  res.status(404).json({ success: false, message: 'File not found.' })
+})
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')))
 
 // ── Rate Limiter ─────────────────────────────────────────────
@@ -97,7 +118,24 @@ app.get('/health', (_req, res) => {
 
 // ── Public Routes ─────────────────────────────────────────────
 app.use('/api/auth',              authRoutes)
+app.use('/api/auth/staff',        staffAuthRoutes)
 app.use('/api/wholesaler/auth',   wholesalerAuthRoutes)
+app.use('/api/retailer/auth',     retailerAuthRoutes)
+app.use('/api/retailer',          authenticate, requireRetailerIdentity, retailerRoutes)
+
+// Retailer identities must use the dedicated API and cannot enter ERP/admin modules.
+const ERP_ROUTE_PREFIXES = [
+  '/api/companies', '/api/branches', '/api/users',
+  '/api/categories', '/api/sub-categories', '/api/brands', '/api/products',
+  '/api/inventory', '/api/warehouses', '/api/suppliers',
+  '/api/enquiries', '/api/orders', '/api/dispatches',
+  '/api/customers', '/api/leads', '/api/followups',
+  '/api/purchases', '/api/stock-transfers', '/api/sales', '/api/expenses',
+  '/api/payments', '/api/accounts', '/api/profit-loss', '/api/quotations', '/api/invoices',
+  '/api/employees', '/api/employee-master', '/api/attendance', '/api/salary',
+  '/api/reports', '/api/notifications', '/api/documents', '/api/subscriptions', '/api/profile',
+]
+app.use(ERP_ROUTE_PREFIXES, authenticate, denyRetailerErpAccess)
 
 // ── Wholesaler Protected Routes ───────────────────────────────
 app.use('/api/wholesaler/products',   authenticate, wholesalerProductRoutes)

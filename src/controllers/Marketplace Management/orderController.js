@@ -2,6 +2,7 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
 const Order        = require('../../models/Marketplace Management/Order');
 const Enquiry      = require('../../models/Marketplace Management/Enquiry');
 const Notification = require('../../models/System Management/Notification');
+const { notifyRetailer } = require('../../utils/pushHelper');
 
 const ORDER_STATUSES = [
   'New', 'Pending Approval', 'Approved',
@@ -90,6 +91,9 @@ async function createOrderFromEnquiry(req, res) {
 
   const enquiry = await Enquiry.findOne({ _id: enquiry_id, company_id: req.user.company_id }).lean();
   if (!enquiry) return sendError(res, 'Enquiry not found.', 404);
+  if (enquiry.buyer_company_id) {
+    return sendError(res, 'Retailer marketplace orders must be created by the buyer from an accepted offer.', 409);
+  }
   if (enquiry.status !== 'Confirmed')
     return sendError(res, 'Enquiry must be Confirmed before creating an order.');
 
@@ -198,6 +202,10 @@ async function createOrder(req, res) {
     order_code,
     enquiry_code,
     company_id:      req.user.company_id,
+    buyer_company_id: null,
+    buyer_user_id:    null,
+    seller_company_id:null,
+    offer_id:         null,
     amount, gst_amount, total_amount,
     gst_percent:     gst_pct,
     purchase_cost,
@@ -276,19 +284,45 @@ async function updateOrderStatus(req, res) {
     ).lean();
   }
 
-  await Notification.create({
+  const notifications = [Notification.create({
     company_id:   req.user.company_id,
     type:         'order',
     title:        `Order → ${status}`,
     message:      `Order ${updated.order_code} status updated to ${status} by ${req.user.name || 'user'}`,
     reference_id: updated._id,
-  });
+  })];
+  if (updated.buyer_company_id && updated.buyer_user_id) {
+    notifications.push(Notification.create({
+      company_id: updated.buyer_company_id,
+      user_id: updated.buyer_user_id,
+      type: 'order_status',
+      title: `Order ${updated.order_code} updated`,
+      message: `Your order status is now ${status}.`,
+      reference_id: updated._id,
+    }));
+    // Push notification to retailer buyer
+    notifyRetailer(updated.buyer_user_id, {
+      title: `Order ${updated.order_code} Updated`,
+      body: `Your order status is now: ${status}`,
+      type: 'order_status',
+      referenceId: updated._id,
+    });
+  }
+  await Promise.all(notifications);
 
   sendSuccess(res, updated, `Order status updated to ${status}.`);
 }
 
 /** PUT /api/orders/:id */
 async function updateOrder(req, res) {
+  const existingOrder = await Order.findOne({ _id: req.params.id, company_id: req.user.company_id })
+    .select('buyer_company_id')
+    .lean();
+  if (!existingOrder) return sendError(res, 'Order not found.', 404);
+  if (existingOrder.buyer_company_id) {
+    return sendError(res, 'Commercial fields on retailer marketplace orders are fixed by the accepted offer.', 409);
+  }
+
   const {
     customer_name, customer_mobile, customer_email, delivery_address, location,
     qty, rate, gst_percent, transport_cost, packing_cost, due_date, notes,
@@ -319,8 +353,14 @@ async function updateOrder(req, res) {
 
 /** DELETE /api/orders/:id */
 async function deleteOrder(req, res) {
-  const result = await Order.deleteOne({ _id: req.params.id, company_id: req.user.company_id });
-  if (result.deletedCount === 0) return sendError(res, 'Order not found.', 404);
+  const order = await Order.findOne({ _id: req.params.id, company_id: req.user.company_id })
+    .select('buyer_company_id')
+    .lean();
+  if (!order) return sendError(res, 'Order not found.', 404);
+  if (order.buyer_company_id) {
+    return sendError(res, 'Retailer marketplace orders cannot be hard-deleted.', 409);
+  }
+  await Order.deleteOne({ _id: order._id, company_id: req.user.company_id });
   sendSuccess(res, null, 'Order deleted.');
 }
 

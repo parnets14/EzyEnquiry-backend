@@ -33,24 +33,37 @@ async function getCustomer(req, res) {
   const cust_id = new mongoose.Types.ObjectId(req.params.id);
   const cid     = new mongoose.Types.ObjectId(req.user.company_id.toString());
 
-  const [orders, enquiries, outstanding] = await Promise.all([
+  const [orders, enquiries, receivables] = await Promise.all([
     Order.find({ customer_id: cust_id, company_id: cid })
       .select('order_code product_name qty total_amount status created_at')
-      .sort({ created_at: -1 }).limit(10).lean(),
+      .sort({ created_at: -1 }).limit(50).lean(),
     Enquiry.find({ company_id: cid, retailer_mobile: customer.mobile })
       .select('enq_code product_name qty status created_at')
-      .sort({ created_at: -1 }).limit(10).lean(),
-    Receivable.aggregate([
-      { $match: { company_id: cid, customer_id: cust_id, status: { $ne: 'Received' } } },
-      { $group: { _id: null, total: { $sum: '$outstanding' } } },
-    ]),
+      .sort({ created_at: -1 }).limit(50).lean(),
+    Receivable.find({ company_id: cid, customer_id: cust_id })
+      .select('rcv_code order_id invoice_amount received outstanding status due_date created_at')
+      .sort({ created_at: -1 }).limit(50).lean(),
   ]);
+
+  // Tag each receivable with its order code (if the order still exists) so the
+  // outstanding amount is always traceable — even when the order was removed.
+  const orderById = new Map(orders.map(o => [String(o._id), o]));
+  const receivableRows = receivables.map(r => ({
+    ...r,
+    order_code: r.order_id ? orderById.get(String(r.order_id))?.order_code || null : null,
+    order_missing: !!r.order_id && !orderById.has(String(r.order_id)),
+  }));
+
+  const outstanding_amount = receivables
+    .filter(r => r.status !== 'Received')
+    .reduce((sum, r) => sum + (r.outstanding || 0), 0);
 
   sendSuccess(res, {
     ...customer,
     orders,
     enquiries,
-    outstanding_amount: outstanding[0]?.total || 0,
+    receivables: receivableRows,
+    outstanding_amount,
   });
 }
 
@@ -68,6 +81,7 @@ async function createCustomer(req, res) {
     address:      req.body.address      || '',
     city:         req.body.city         || '',
     state:        req.body.state        || '',
+    pincode:      req.body.pincode      || '',
     biz_type:     req.body.biz_type     || 'Retailer',
     credit_limit: req.body.credit_limit || 0,
   });
@@ -76,7 +90,7 @@ async function createCustomer(req, res) {
 
 /** PUT /api/customers/:id */
 async function updateCustomer(req, res) {
-  const { name, mobile, email, gst_number, address, city, state, biz_type, credit_limit, is_active } = req.body;
+  const { name, mobile, email, gst_number, address, city, state, pincode, biz_type, credit_limit, is_active } = req.body;
   const update = {};
   if (name         !== undefined) update.name         = name;
   if (mobile       !== undefined) update.mobile       = mobile;
@@ -85,6 +99,7 @@ async function updateCustomer(req, res) {
   if (address      !== undefined) update.address      = address;
   if (city         !== undefined) update.city         = city;
   if (state        !== undefined) update.state        = state;
+  if (pincode      !== undefined) update.pincode      = pincode;
   if (biz_type     !== undefined) update.biz_type     = biz_type;
   if (credit_limit !== undefined) update.credit_limit = credit_limit;
   if (is_active    !== undefined) update.is_active    = is_active;
