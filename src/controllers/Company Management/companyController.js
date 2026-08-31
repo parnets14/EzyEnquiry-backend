@@ -1,16 +1,11 @@
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers')
+const path         = require('path')
+const fs           = require('fs')
 const Company      = require('../../models/Company Management/Company')
 const User         = require('../../models/User Management/User')
 const Notification = require('../../models/System Management/Notification')
 const { notifyRetailer } = require('../../utils/pushHelper')
-
-// ── Helper: generate next company code ───────────────────────
-async function getNextCompanyCode() {
-  const last = await Company.findOne({ company_code: /^COM-/ }).sort({ company_code: -1 }).lean()
-  if (!last?.company_code) return 'COM-001'
-  const num = parseInt(last.company_code.replace('COM-', ''), 10)
-  return `COM-${String(num + 1).padStart(3, '0')}`
-}
+const { getNextCompanyCode } = require('../../utils/sequence')
 
 /** GET /api/companies */
 async function listCompanies(req, res) {
@@ -217,4 +212,51 @@ async function deleteCompany(req, res) {
   sendSuccess(res, null, 'Company and associated users deleted.')
 }
 
-module.exports = { listCompanies, getCompany, createCompany, updateCompany, approveCompany, rejectCompany, updateDocs, deleteCompany }
+/**
+ * GET /api/companies/:id/documents/:type
+ * Streams a company's KYC document (gst | pan | address | biz) inline.
+ * Auth is enforced by the route mount (authenticate). KYC files are not
+ * publicly served (see server.js), so this is the sanctioned access path.
+ */
+const DOC_FIELD_BY_TYPE = {
+  gst:     'doc_gst_url',
+  pan:     'doc_pan_url',
+  address: 'doc_reg_url',   // "Address Proof" maps to registration doc
+  biz:     'doc_trade_url', // "Business Registration" maps to trade license
+}
+
+const MIME_BY_EXT = {
+  '.pdf':  'application/pdf',
+  '.png':  'image/png',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif':  'image/gif',
+  '.webp': 'image/webp',
+}
+
+async function getCompanyDocument(req, res) {
+  const { id, type } = req.params
+  const field = DOC_FIELD_BY_TYPE[type]
+  if (!field) return sendError(res, 'Invalid document type.', 400)
+
+  const company = await Company.findById(id).select(Object.values(DOC_FIELD_BY_TYPE).join(' ')).lean()
+  if (!company) return sendError(res, 'Company not found.', 404)
+
+  const relUrl = company[field]
+  if (!relUrl) return sendError(res, 'Document not uploaded.', 404)
+
+  // Resolve to the file on disk. Stored as "/uploads/kyc/<file>".
+  // Guard against path traversal by resolving and confirming it stays in /uploads.
+  const uploadsRoot = path.resolve(__dirname, '../../../uploads')
+  const absPath     = path.resolve(__dirname, '../../..', '.' + relUrl)
+  if (!absPath.startsWith(uploadsRoot)) return sendError(res, 'Invalid document path.', 400)
+  if (!fs.existsSync(absPath))          return sendError(res, 'File not found on server.', 404)
+
+  const ext  = path.extname(absPath).toLowerCase()
+  const mime = MIME_BY_EXT[ext] || 'application/octet-stream'
+  res.setHeader('Content-Type', mime)
+  res.setHeader('Content-Disposition', `inline; filename="${type}${ext}"`)
+  fs.createReadStream(absPath).pipe(res)
+}
+
+module.exports = { listCompanies, getCompany, createCompany, updateCompany, approveCompany, rejectCompany, updateDocs, deleteCompany, getCompanyDocument }

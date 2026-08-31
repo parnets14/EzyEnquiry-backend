@@ -4,6 +4,7 @@ const ctrl    = require('../../controllers/Company Management/companyController'
 const { authorize } = require('../../middleware/auth');
 
 router.get   ('/',                ctrl.listCompanies);
+router.get   ('/:id/documents/:type', ctrl.getCompanyDocument);
 router.get   ('/:id',             ctrl.getCompany);
 router.post  ('/',                ctrl.createCompany);
 router.put   ('/:id',             ctrl.updateCompany);

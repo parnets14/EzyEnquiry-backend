@@ -1,5 +1,4 @@
 const bcrypt = require('bcryptjs')
-const crypto = require('crypto')
 const jwt = require('jsonwebtoken')
 
 const User = require('../../models/User Management/User')
@@ -8,6 +7,7 @@ const RetailerSession = require('../../models/Retailer Management/RetailerSessio
 const RegistrationVerification = require('../../models/Retailer Management/RegistrationVerification')
 const { verifyOtp } = require('../../utils/otp')
 const { sendSuccess, sendError } = require('../../utils/helpers')
+const { getNextCompanyCode } = require('../../utils/sequence')
 
 const OTP_PURPOSES = ['login', 'register']
 const REGISTRATION_TOKEN_TTL = '10m'
@@ -252,7 +252,7 @@ async function register(req, res) {
 
   let company
   try {
-    const companyCode = `RET${Date.now().toString().slice(-7)}${crypto.randomInt(100, 999)}`
+    const companyCode = await getNextCompanyCode()
     company = await Company.create({
       company_code: companyCode,
       name: String(companyName).trim(),

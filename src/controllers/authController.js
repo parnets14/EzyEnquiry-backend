@@ -5,6 +5,7 @@ const Company = require('../models/Company Management/Company')
 const { generateOtp, storeOtp, verifyOtp } = require('../utils/otp')
 const { sendOtpMail }            = require('../utils/mailer')
 const { sendSuccess, sendError } = require('../utils/helpers')
+const { getNextCompanyCode }     = require('../utils/sequence')
 
 function signToken(userId) {
   return jwt.sign({ userId }, process.env.JWT_SECRET, {
@@ -187,8 +188,8 @@ async function register(req, res) {
   const existingMobile = await User.findOne({ mobile }).lean()
   if (existingMobile) return sendError(res, 'Mobile number already registered.', 409)
 
-  // Generate unique company code
-  const companyCode = 'EZY' + Date.now().toString().slice(-7)
+  // Generate sequential company code (EZY001, EZY002, ...)
+  const companyCode = await getNextCompanyCode()
 
   // Create Company
   const company = await Company.create({
