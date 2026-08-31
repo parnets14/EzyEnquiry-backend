@@ -57,7 +57,9 @@ const subscriptionRoutes = require('./routes/System Management/subscriptionRoute
 const profileRoutes      = require('./routes/System Management/profileRoutes')
 const quotationRoutes    = require('./routes/Finance Management/quotationRoutes')
 const invoiceRoutes      = require('./routes/Finance Management/invoiceRoutes')
-const wholesalerAuthRoutes = require('./routes/Wholesaler Management/wholesalerAuthRoutes')
+const wholesalerAuthRoutes      = require('./routes/Wholesaler Management/wholesalerAuthRoutes')
+const wholesalerProductRoutes   = require('./routes/Wholesaler Management/wholesalerProductRoutes')
+const wholesalerInventoryRoutes = require('./routes/Wholesaler Management/wholesalerInventoryRoutes')
 
 // ────────────────────────────────────────────────────────────
 const app  = express()
@@ -66,16 +68,14 @@ const PORT = process.env.PORT || 5000
 // ── Security & Utility Middleware ────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }))
 app.use(compression())
+// In development: allow ALL origins so any phone/emulator on the LAN can connect.
+// In production: restrict to your actual frontend domain via FRONTEND_URL env var.
+const corsOrigin = process.env.NODE_ENV === 'production'
+  ? (process.env.FRONTEND_URL || 'https://your-domain.com')
+  : true // true = reflect any origin — safe for local dev
+
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL || 'http://localhost:5173',
-    'http://localhost:3000',
-    'http://10.67.41.163:5173',   // frontend on this machine
-    'http://10.67.41.163',        // mobile device
-    'http://10.67.41.163:8081',   // React Native Metro dev server on device
-    'http://192.168.1.8',        // alternate device IP
-    'http://192.168.1.8:8081',
-  ],
+  origin: corsOrigin,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -98,6 +98,11 @@ app.get('/health', (_req, res) => {
 // ── Public Routes ─────────────────────────────────────────────
 app.use('/api/auth',              authRoutes)
 app.use('/api/wholesaler/auth',   wholesalerAuthRoutes)
+
+// ── Wholesaler Protected Routes ───────────────────────────────
+app.use('/api/wholesaler/products',   authenticate, wholesalerProductRoutes)
+app.use('/api/wholesaler/inventory',  authenticate, wholesalerInventoryRoutes)
+app.use('/api/wholesaler/warehouses', authenticate, require('./routes/Wholesaler Management/wholesalerWarehouseRoutes'))
 
 // ── Protected Routes ──────────────────────────────────────────
 app.use('/api/companies',     authenticate, companyRoutes)
@@ -164,8 +169,8 @@ connectDB().then(async () => {
   await seedSuperAdmin()
   await healOrphanUsers()
 
-  app.listen(PORT, () => {
-    console.log(`✓ Server running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`)
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✓ Server running on http://0.0.0.0:${PORT} [${process.env.NODE_ENV || 'development'}]`)
   })
 })
 

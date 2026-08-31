@@ -9,6 +9,7 @@
  *  POST /register          — register company + owner (step 1)
  *  POST /upload-docs       — upload KYC docs (step 2)
  *  GET  /me                — get logged-in user profile
+ *  GET  /approval-status   — lightweight status check (no heavy join)
  *  POST /fcm-token         — save FCM push token
  *  POST /logout            — invalidate FCM token / logout
  */
@@ -367,6 +368,41 @@ async function logout(req, res) {
   sendSuccess(res, null, 'Logged out successfully.')
 }
 
+/**
+ * GET /api/wholesaler/auth/approval-status
+ * Protected — lightweight status check, avoids full /me join.
+ * Returns only the fields the app needs to decide which screen to show.
+ *
+ * Response:
+ *   { status: 'Pending'|'Approved'|'Rejected', ownerName, companyId, companyName }
+ */
+async function approvalStatus(req, res) {
+  const user = await User.findById(req.user._id)
+    .select('name company_id')
+    .lean()
+
+  if (!user) return sendError(res, 'User not found.', 404)
+
+  if (!user.company_id) {
+    return sendError(res, 'No company linked to this account.', 404)
+  }
+
+  const company = await Company.findById(user.company_id)
+    .select('name status owner_name approved_at reject_reason')
+    .lean()
+
+  if (!company) return sendError(res, 'Company not found.', 404)
+
+  sendSuccess(res, {
+    status:      company.status,           // 'Pending' | 'Approved' | 'Rejected'
+    ownerName:   user.name || company.owner_name || '',
+    companyId:   String(company._id),
+    companyName: company.name || '',
+    approvedAt:  company.approved_at || null,
+    rejectReason: company.reject_reason || '',
+  })
+}
+
 module.exports = {
   checkMobile,
   sendOtpHandler,
@@ -374,6 +410,7 @@ module.exports = {
   register,
   uploadDocs,
   me,
+  approvalStatus,
   saveFcmToken,
   logout,
 }

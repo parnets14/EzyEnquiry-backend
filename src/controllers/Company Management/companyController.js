@@ -1,7 +1,8 @@
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers')
-const Company      = require('../../models/Company Management/Company')
-const User         = require('../../models/User Management/User')
-const Notification = require('../../models/System Management/Notification')
+const Company          = require('../../models/Company Management/Company')
+const User             = require('../../models/User Management/User')
+const Notification     = require('../../models/System Management/Notification')
+const { sendPushToUser } = require('../../utils/fcm')
 
 // ── Helper: generate next company code ───────────────────────
 async function getNextCompanyCode() {
@@ -104,9 +105,23 @@ async function updateCompany(req, res) {
 
 /** PATCH /api/companies/:id/approve */
 async function approveCompany(req, res) {
+  // Fetch current state first to prevent duplicate approvals
+  const existing = await Company.findById(req.params.id).lean()
+  if (!existing) return sendError(res, 'Company not found.', 404)
+
+  if (existing.status === 'Approved') {
+    return sendError(res, 'This company is already approved. No action taken.', 409)
+  }
+
+  const now     = new Date()
   const company = await Company.findByIdAndUpdate(
     req.params.id,
-    { status: 'Approved', reviewed_by: req.user._id },
+    {
+      status:      'Approved',
+      reviewed_by: req.user._id,
+      approved_at: now,
+      approved_by: req.user._id,
+    },
     { new: true }
   ).lean()
   if (!company) return sendError(res, 'Company not found.', 404)
@@ -117,17 +132,34 @@ async function approveCompany(req, res) {
   // Find the company owner to send notification
   const owner = await User.findOne({ company_id: company._id, role: 'Company Owner' }).lean()
 
-  // Create in-app notification for the company owner
   if (owner) {
+    const ownerName = owner.name || company.owner_name || 'Wholesaler'
+
+    // Create in-app notification for the company owner
     await Notification.create({
       company_id:   company._id,
       user_id:      owner._id,
       type:         'approval',
-      title:        '🎉 Account Approved!',
-      message:      `Congratulations! Your company "${company.name}" has been approved by admin. You can now access all features of EzyEnquiry.`,
+      title:        'Registration Approved',
+      message:      `Congratulations ${ownerName}! Your wholesaler registration has been approved successfully.`,
       reference_id: company._id,
       is_read:      false,
     }).catch(() => {})  // non-fatal
+
+    // Send FCM push notification to wholesaler's device(s)
+    // data payload values must all be strings for FCM
+    await sendPushToUser(
+      owner._id,
+      'Registration Approved',
+      `Congratulations ${ownerName}! Your wholesaler registration has been approved successfully.`,
+      {
+        type:       'approval',
+        company_id: String(company._id),
+        user_id:    String(owner._id),
+        status:     'Approved',
+        ownerName:  ownerName,
+      }
+    ).catch(() => {})  // non-fatal — never block the HTTP response
   }
 
   sendSuccess(res, company, 'Company approved successfully.')
@@ -155,6 +187,18 @@ async function rejectCompany(req, res) {
       reference_id: company._id,
       is_read:      false,
     }).catch(() => {})
+
+    // Send FCM push notification for rejection
+    await sendPushToUser(
+      owner._id,
+      '❌ Application Rejected',
+      `Your company registration was rejected. Reason: ${reject_reason || 'Not specified'}. Contact support for help.`,
+      {
+        type:       'rejection',
+        company_id: String(company._id),
+        status:     'Rejected',
+      }
+    ).catch(() => {})  // non-fatal
   }
 
   sendSuccess(res, company, 'Company rejected.')

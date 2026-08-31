@@ -66,6 +66,9 @@ router.post('/upload-docs', kycUpload, ctrl.uploadDocs)
 // Get current user profile + company status
 router.get('/me', authenticate, ctrl.me)
 
+// Lightweight approval status check (used on app launch / ApprovalWaiting polling)
+router.get('/approval-status', authenticate, ctrl.approvalStatus)
+
 // Save FCM push notification token
 router.post('/fcm-token', authenticate, ctrl.saveFcmToken)
 
