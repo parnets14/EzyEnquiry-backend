@@ -29,6 +29,7 @@ const Employee      = require('./HR Management/Employee')
 const Attendance    = require('./HR Management/Attendance')
 const SalaryRecord  = require('./HR Management/SalaryRecord')
 const Notification  = require('./System Management/Notification')
+const Counter       = require('./System Management/Counter')
 
 module.exports = {
   Company,
@@ -62,4 +63,5 @@ module.exports = {
   Attendance,
   SalaryRecord,
   Notification,
+  Counter,
 }

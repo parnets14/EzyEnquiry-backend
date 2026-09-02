@@ -25,6 +25,7 @@ const WholesalerSession  = require('../../models/Wholesaler Management/Wholesale
 const { generateOtp, storeOtp, verifyOtp } = require('../../utils/otp')
 const { sendOtpMail }                      = require('../../utils/mailer')
 const { sendSuccess, sendError }           = require('../../utils/helpers')
+const { getNextCompanyCode }               = require('../../utils/sequence')
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -275,8 +276,8 @@ async function register(req, res) {
   if (existingMobile) return sendError(res, 'This mobile number is already registered.', 409)
   if (existingEmail)  return sendError(res, 'This email address is already registered.', 409)
 
-  // Generate unique company code: EZY + last 7 digits of timestamp
-  const companyCode = 'EZY' + Date.now().toString().slice(-7)
+  // Generate sequential company code (EZY001, EZY002, ...)
+  const companyCode = await getNextCompanyCode()
 
   // Create Company
   const company = await Company.create({
