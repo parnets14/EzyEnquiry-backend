@@ -68,10 +68,14 @@ function nullifyIds(body) {
 
 /** GET /api/products */
 async function listProducts(req, res) {
-  const { page = 1, limit = 20, search, finish, material, sub_category, is_active } = req.query
+  const { page = 1, limit = 20, search, finish, material, sub_category, is_active, all_companies } = req.query
   const offset = (parseInt(page) - 1) * parseInt(limit)
 
-  const query = { company_id: req.user.company_id, status: { $ne: 'deleted' } }
+  // Super Admin may view products across ALL companies (incl. wholesaler-added)
+  // by passing ?all_companies=true. Everyone else is scoped to their company.
+  const seeAll = req.user.role === 'Super Admin' && String(all_companies) === 'true'
+  const query = { status: { $ne: 'deleted' } }
+  if (!seeAll) query.company_id = req.user.company_id
   if (search)       query.$or = [{ name: { $regex: search, $options: 'i' } }, { code: { $regex: search, $options: 'i' } }]
   if (finish)       query.finish          = finish
   if (material)     query.material        = material

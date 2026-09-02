@@ -4,6 +4,7 @@ logs/
 uploads/documents/*
 uploads/images/*
 uploads/avatars/*
+uploads/kyc/*
 !uploads/.gitkeep
 dist/
 *.log

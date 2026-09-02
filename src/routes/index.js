@@ -63,5 +63,6 @@ router.use('/notifications', requireCompany, require('./System Management/notifi
 router.use('/documents',     requireCompany, require('./System Management/documentRoutes'));
 router.use('/subscriptions', requireCompany, require('./System Management/subscriptionRoutes'));
 router.use('/profile',       requireCompany, require('./System Management/profileRoutes'));
+router.use('/audit-logs',    requireCompany, require('./System Management/auditLogRoutes'));
 
 module.exports = router;

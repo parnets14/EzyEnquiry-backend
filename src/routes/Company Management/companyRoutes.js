@@ -1,9 +1,12 @@
 const express = require('express');
 const router  = express.Router();
 const ctrl    = require('../../controllers/Company Management/companyController');
+const docCtrl = require('../../controllers/Company Management/companyDocumentController');
 const { authorize } = require('../../middleware/auth');
 
 router.get   ('/',                ctrl.listCompanies);
+// KYC documents — signed-URL list (admins only). Must be before '/:id'.
+router.get   ('/:id/documents',   authorize('Super Admin', 'Company Owner'), docCtrl.getCompanyDocuments);
 router.get   ('/:id',             ctrl.getCompany);
 router.post  ('/',                ctrl.createCompany);
 router.put   ('/:id',             ctrl.updateCompany);

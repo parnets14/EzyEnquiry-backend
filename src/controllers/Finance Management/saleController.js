@@ -11,10 +11,12 @@
  */
 
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
-const Sale      = require('../../models/Finance Management/Sale');
-const Order     = require('../../models/Marketplace Management/Order');
-const Inventory = require('../../models/Purchase & Inventory Management/Inventory');
-const mongoose  = require('mongoose');
+const Sale        = require('../../models/Finance Management/Sale');
+const Order       = require('../../models/Marketplace Management/Order');
+const Inventory   = require('../../models/Purchase & Inventory Management/Inventory');
+const Receivable  = require('../../models/Finance Management/Receivable');
+const Transaction = require('../../models/Finance Management/Transaction');
+const mongoose    = require('mongoose');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -24,6 +26,18 @@ async function nextSaleCode() {
   const last = await Sale.findOne({ sale_code: /^SAL-/ }).sort({ sale_code: -1 }).lean();
   const num  = last?.sale_code ? parseInt(last.sale_code.split('-')[1], 10) : 0;
   return `SAL-${String(num + 1).padStart(4, '0')}`;
+}
+
+async function nextReceivableCode() {
+  const last = await Receivable.findOne({ rcv_code: /^RCV-/ }).sort({ rcv_code: -1 }).lean();
+  const num  = last?.rcv_code ? parseInt(last.rcv_code.split('-')[1], 10) : 0;
+  return `RCV-${String(num + 1).padStart(4, '0')}`;
+}
+
+async function nextTxnCode() {
+  const last = await Transaction.findOne({ txn_code: /^TXN-/ }).sort({ txn_code: -1 }).lean();
+  const num  = last?.txn_code ? parseInt(last.txn_code.split('-')[1], 10) : 0;
+  return `TXN-${String(num + 1).padStart(4, '0')}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -139,6 +153,9 @@ async function createSale(req, res) {
     cogs = (inv?.purchase_rate || 0) * qtyF;
   }
 
+  const paidAmount  = parseFloat(req.body.paid_amount || 0);
+  const outstanding = grand_total - paidAmount;
+
   const sale = await Sale.create({
     ...req.body,
     sale_code:      await nextSaleCode(),
@@ -150,12 +167,30 @@ async function createSale(req, res) {
     discount,
     grand_total,
     cogs,
-    outstanding:    grand_total - parseFloat(req.body.paid_amount || 0),
-    payment_status: req.body.payment_status || 'Pending',
+    outstanding,
+    payment_status: req.body.payment_status || (outstanding <= 0 ? 'Paid' : paidAmount > 0 ? 'Partial' : 'Pending'),
     sale_status:    req.body.sale_status    || 'Confirmed',
     sale_date:      req.body.sale_date      || new Date(),
     created_by:     req.user._id,
   });
+
+  // Create a matching Receivable so the sale shows up in the receivables
+  // ledger / customer ledger (parity with dispatchController.markDelivered).
+  if (outstanding > 0) {
+    await Receivable.create({
+      rcv_code:       await nextReceivableCode(),
+      company_id:     req.user.company_id,
+      customer_id:    sale.customer_id || null,
+      customer_name:  sale.customer_name || customer_name,
+      order_id:       sale.order_id || null,
+      sale_id:        sale._id,
+      invoice_amount: grand_total,
+      received:       paidAmount,
+      outstanding,
+      due_date:       req.body.due_date || null,
+      status:         paidAmount > 0 ? 'Partial' : 'Pending',
+    });
+  }
 
   sendSuccess(res, sale, 'Sale created.', 201);
 }
@@ -165,21 +200,52 @@ async function createSale(req, res) {
 // Body: { paid_amount, payment_mode, notes }
 // ─────────────────────────────────────────────────────────────────────────────
 async function recordPayment(req, res) {
+  const payAmount = parseFloat(req.body.paid_amount || 0);
+  if (!payAmount || payAmount <= 0) return sendError(res, 'paid_amount must be positive.');
+
   const sale = await Sale.findOne({ _id: req.params.id, company_id: req.user.company_id }).lean();
   if (!sale) return sendError(res, 'Sale not found.', 404);
 
-  const newPaid   = (sale.paid_amount || 0) + parseFloat(req.body.paid_amount || 0);
-  const outstanding = Math.max(0, (sale.grand_total || sale.total_amount) - newPaid);
+  const newPaid       = (sale.paid_amount || 0) + payAmount;
+  const outstanding   = Math.max(0, (sale.grand_total || sale.total_amount) - newPaid);
   const paymentStatus = outstanding <= 0 ? 'Paid'
     : newPaid > 0 ? 'Partial' : 'Pending';
+  const mode = req.body.payment_mode || sale.payment_mode || 'Cash';
 
   const updated = await Sale.findByIdAndUpdate(sale._id, {
     paid_amount:    newPaid,
     outstanding,
     payment_status: paymentStatus,
-    payment_mode:   req.body.payment_mode || sale.payment_mode,
+    payment_mode:   mode,
     notes:          req.body.notes        || sale.notes,
   }, { new: true }).lean();
+
+  // Keep the linked Receivable in sync so the customer ledger stays correct.
+  const rcv = await Receivable.findOne({ sale_id: sale._id, company_id: req.user.company_id }).lean();
+  if (rcv) {
+    const rcvReceived    = (rcv.received || 0) + payAmount;
+    const rcvOutstanding = Math.max(0, (rcv.invoice_amount || 0) - rcvReceived);
+    await Receivable.findByIdAndUpdate(rcv._id, {
+      received:    rcvReceived,
+      outstanding: rcvOutstanding,
+      status:      rcvOutstanding <= 0 ? 'Received' : 'Partial',
+    });
+  }
+
+  // Post the payment to the ledger (cash book / bank book / customer ledger).
+  await Transaction.create({
+    txn_code:     await nextTxnCode(),
+    company_id:   req.user.company_id,
+    type:         'Received',
+    party_name:   sale.customer_name || '',
+    reference_id: rcv?._id || sale._id,
+    amount:       payAmount,
+    mode,
+    reference:    req.body.reference || sale.sale_code || '',
+    notes:        req.body.notes || '',
+    recorded_by:  req.user._id,
+    txn_date:     new Date(),
+  });
 
   sendSuccess(res, updated, `Payment recorded. Status: ${paymentStatus}.`);
 }

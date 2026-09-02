@@ -245,8 +245,8 @@ async function register(req, res) {
     gstNumber, panNumber, address, city, state, pincode,
   } = req.body
 
-  // Required field validation
-  const required = { companyName, ownerName, mobile, email, businessType, password }
+  // Required field validation (password is optional — this app uses OTP login)
+  const required = { companyName, ownerName, mobile, email, businessType }
   for (const [field, val] of Object.entries(required)) {
     if (!val || String(val).trim() === '') {
       return sendError(res, `${field} is required.`, 400)
@@ -262,7 +262,8 @@ async function register(req, res) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
     return sendError(res, 'Please provide a valid email address.', 400)
   }
-  if (String(password).length < 6) {
+  // Password is optional; only validate length if one was provided.
+  if (password && String(password).length < 6) {
     return sendError(res, 'Password must be at least 6 characters.', 400)
   }
 
@@ -294,17 +295,20 @@ async function register(req, res) {
     status:      'Pending',
   })
 
-  // Create Company Owner user with a hashed password for sign-in
-  const password_hash = await bcrypt.hash(String(password), 12)
-  const user = await User.create({
+  // Create Company Owner user. Password is optional (OTP login by default);
+  // only hash & store a password if the user actually provided one.
+  const userData = {
     company_id: company._id,
     name:       String(ownerName).trim(),
     email:      cleanEmail,
     mobile:     cleanMobile,
     role:       'Company Owner',
-    password_hash,
     is_active:  true,
-  })
+  }
+  if (password) {
+    userData.password_hash = await bcrypt.hash(String(password), 12)
+  }
+  const user = await User.create(userData)
 
   sendSuccess(
     res,

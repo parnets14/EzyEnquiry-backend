@@ -22,6 +22,7 @@ const { authenticate,
         requireCompany }     = require('./middleware/auth')
 const { requireRetailerIdentity,
         denyRetailerErpAccess } = require('./middleware/retailerAccess')
+const { auditLogger }        = require('./middleware/auditLogger')
 
 // ── Routes ───────────────────────────────────────────────────
 const authRoutes         = require('./routes/authRoutes')
@@ -116,6 +117,12 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), service: 'EzyEnquiry API' })
 })
 
+// ── Public KYC document viewer (token-signed, no auth header) ─
+// The signed token in the query string is the authorization; must be
+// registered BEFORE the authenticated /api/companies block below.
+const { viewCompanyDocument } = require('./controllers/Company Management/companyDocumentController')
+app.get('/api/companies/documents/view', viewCompanyDocument)
+
 // ── Public Routes ─────────────────────────────────────────────
 app.use('/api/auth',              authRoutes)
 app.use('/api/auth/staff',        staffAuthRoutes)
@@ -134,13 +141,15 @@ const ERP_ROUTE_PREFIXES = [
   '/api/payments', '/api/accounts', '/api/profit-loss', '/api/quotations', '/api/invoices',
   '/api/employees', '/api/employee-master', '/api/attendance', '/api/salary',
   '/api/reports', '/api/notifications', '/api/documents', '/api/subscriptions', '/api/profile',
+  '/api/audit-logs',
 ]
-app.use(ERP_ROUTE_PREFIXES, authenticate, denyRetailerErpAccess)
+app.use(ERP_ROUTE_PREFIXES, authenticate, denyRetailerErpAccess, auditLogger)
 
 // ── Wholesaler Protected Routes ───────────────────────────────
 app.use('/api/wholesaler/products',   authenticate, wholesalerProductRoutes)
 app.use('/api/wholesaler/inventory',  authenticate, wholesalerInventoryRoutes)
 app.use('/api/wholesaler/warehouses', authenticate, require('./routes/Wholesaler Management/wholesalerWarehouseRoutes'))
+app.use('/api/wholesaler/purchases',  authenticate, require('./routes/Wholesaler Management/wholesalerPurchaseRoutes'))
 
 // ── Protected Routes ──────────────────────────────────────────
 app.use('/api/companies',     authenticate, companyRoutes)
@@ -193,6 +202,7 @@ app.use('/api/notifications', authenticate, requireCompany, notificationRoutes)
 app.use('/api/documents',     authenticate, requireCompany, documentRoutes)
 app.use('/api/subscriptions', authenticate, requireCompany, subscriptionRoutes)
 app.use('/api/profile',       authenticate, profileRoutes)
+app.use('/api/audit-logs',    authenticate, requireCompany, require('./routes/System Management/auditLogRoutes'))
 
 // ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {
