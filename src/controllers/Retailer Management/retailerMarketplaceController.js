@@ -18,11 +18,20 @@ const { notifyRetailer, notifySeller } = require('../../utils/pushHelper')
 const PRODUCT_SELECT = [
   'company_id', 'code', 'name', 'alias', 'brand_id', 'category_id', 'sub_category_id',
   'hsn_code', 'size', 'finish', 'material', 'color', 'surface', 'thickness', 'grade',
-  'tile_type', 'application', 'anti_skid', 'origin', 'manufacturer', 'design', 'collection',
+  'tile_type', 'application', 'anti_skid', 'origin', 'manufacturer', 'barcode', 'design', 'collection',
   'pcs_per_box', 'sqft_per_box', 'weight_per_box', 'unit', 'gst_percent', 'description',
-  'selling_price', 'dealer_price', 'retail_price', 'mrp', 'new_arrival', 'featured', 'image_urls',
+  'selling_price', 'dealer_price', 'retail_price', 'mrp', 'sales_type', 'product_type',
+  'new_arrival', 'featured', 'online_visible', 'is_active', 'status', 'image_urls', 'created_by_type',
   'created_at', 'updated_at',
 ].join(' ')
+
+// Browsing is shared across Admin, Wholesaler, and Retailer products. Legacy
+// records with missing lifecycle defaults remain visible unless explicitly
+// inactive or deleted; seller approval is enforced separately for enquiries.
+const CATALOG_PRODUCT_QUERY = {
+  is_active: { $ne: false },
+  status: { $ne: 'deleted' },
+}
 
 const ANDROID_STATUS = {
   New: 'New',
@@ -77,8 +86,39 @@ function nonNegative(value, field) {
   return money(number)
 }
 
-function productResponse(product, stock = 0) {
+// A product created by the platform Admin is pre-trusted: Admin is the approval
+// authority, so its products are always enquirable regardless of the owner
+// company's approval status. Third-party sellers (Wholesaler) must still be an
+// approved, active, non-Retailer company. Retailer-owned products are never
+// enquiry targets (browse-only). Requires product.online_visible.
+function isEnquirableProduct(product) {
+  if (!product || product.online_visible === false) return false
   const seller = product.company_id || {}
+
+  if (String(product.created_by_type || '') === 'Admin') return true
+
+  return Boolean(
+    seller?._id
+    && seller.status === 'Approved'
+    && seller.is_active !== false
+    && seller.biz_type !== 'Retailer'
+  )
+}
+
+function productResponse(product, stock = 0, viewer = null) {
+  const seller = product.company_id || {}
+  const legacyCode = String(product.code || '').toUpperCase()
+  const sellerType = String(seller.biz_type || '').toLowerCase()
+  const inferredCreatorType = sellerType.includes('retail')
+    ? 'Retailer'
+    : sellerType.includes('whole')
+      ? 'Wholesaler'
+      : legacyCode.startsWith('RPD-') ? 'Retailer' : 'Unknown'
+  const canManage = viewer?.role === 'Retailer'
+    && seller?._id
+    && String(viewer.company_id) === String(seller._id)
+  const canEnquire = isEnquirableProduct(product)
+
   return {
     id: product._id,
     code: product.code,
@@ -92,7 +132,8 @@ function productResponse(product, stock = 0) {
       material: product.material || '', color: product.color || '', surface: product.surface || '',
       thickness: product.thickness || '', grade: product.grade || '', tile_type: product.tile_type || '',
       application: product.application || '', anti_skid: product.anti_skid || '', origin: product.origin || '',
-      manufacturer: product.manufacturer || '', design: product.design || '', collection: product.collection || '',
+      manufacturer: product.manufacturer || '', barcode: product.barcode || '',
+      design: product.design || '', collection: product.collection || '',
     },
     packing: {
       pcs_per_box: product.pcs_per_box,
@@ -108,6 +149,10 @@ function productResponse(product, stock = 0) {
       retail_price: product.retail_price,
       mrp: product.mrp,
     },
+    classification: {
+      sales_type: product.sales_type || '',
+      product_type: product.product_type || '',
+    },
     flags: { new_arrival: !!product.new_arrival, featured: !!product.featured },
     image_urls: product.image_urls || [],
     visible_stock: Math.max(Number(stock) || 0, 0),
@@ -118,7 +163,11 @@ function productResponse(product, stock = 0) {
       name: seller.name || '',
       city: seller.city || '',
       state: seller.state || '',
+      biz_type: seller.biz_type || '',
     } : null,
+    added_by_type: product.created_by_type || inferredCreatorType,
+    can_manage: !!canManage,
+    can_enquire: canEnquire,
     created_at: product.created_at,
     updated_at: product.updated_at,
   }
@@ -236,16 +285,23 @@ async function stockMap(productIds) {
   return new Map(rows.map(row => [row._id.toString(), Math.max(row.stock || 0, 0)]))
 }
 
-async function getVisibleProduct(id) {
+async function getCatalogueProduct(id) {
   if (!isObjectId(id)) return null
-  const product = await Product.findOne({ _id: id, is_active: true, status: 'active', online_visible: true })
+  return Product.findOne({ _id: id, ...CATALOG_PRODUCT_QUERY })
     .select(PRODUCT_SELECT)
-    .populate({ path: 'company_id', match: { status: 'Approved', is_active: { $ne: false }, biz_type: { $ne: 'Retailer' } }, select: 'company_code name city state status is_active biz_type' })
+    .populate('company_id', 'company_code name city state status is_active biz_type')
     .populate('brand_id', 'name code')
     .populate('category_id', 'name code')
     .populate('sub_category_id', 'name code')
     .lean()
-  return product?.company_id ? product : null
+}
+
+async function getEnquiryProduct(id) {
+  const product = await getCatalogueProduct(id)
+  if (!product || !product.company_id) return null
+  // Admin products bypass seller approval; third-party sellers must be vetted.
+  if (!isEnquirableProduct(product)) return null
+  return product
 }
 
 async function dashboard(req, res) {
@@ -264,43 +320,73 @@ async function dashboard(req, res) {
 
 async function listProducts(req, res) {
   const { page, limit, skip } = parsePagination(req.query)
-  const companyQuery = { status: 'Approved', is_active: { $ne: false }, biz_type: { $ne: 'Retailer' } }
+  let sellerIds = null
+
+  // Location is an optional browse filter. Without it, do not pre-filter by
+  // company approval so every active catalogue product can be displayed.
   if (req.query.location) {
     const location = new RegExp(escapeRegex(req.query.location), 'i')
-    companyQuery.$or = [{ city: location }, { state: location }, { address: location }]
+    sellerIds = await Company.find({
+      $or: [{ city: location }, { state: location }, { address: location }],
+    }).distinct('_id')
+    if (!sellerIds.length) {
+      const pagination = paginate(0, page, limit)
+      return ok(res, { products: [], pagination }, 'Products retrieved.', 200, pagination)
+    }
   }
-  const sellerIds = await Company.find(companyQuery).distinct('_id')
-  if (!sellerIds.length) return ok(res, { products: [] }, 'Products retrieved.', 200, paginate(0, page, limit))
 
-  const query = { company_id: { $in: sellerIds }, is_active: true, status: 'active', online_visible: true }
+  const companyScope = sellerIds ? { company_id: { $in: sellerIds } } : {}
+  const query = { ...CATALOG_PRODUCT_QUERY, ...companyScope }
   const search = String(req.query.search || '').trim()
   if (search) {
     const regex = new RegExp(escapeRegex(search), 'i')
-    query.$or = [{ code: regex }, { name: regex }, { alias: regex }, { design: regex }, { description: regex }]
+    const [brandIds, categoryIds] = await Promise.all([
+      Brand.find({ ...companyScope, $or: [{ name: regex }, { code: regex }] }).distinct('_id'),
+      Category.find({ ...companyScope, $or: [{ name: regex }, { code: regex }] }).distinct('_id'),
+    ])
+    query.$or = [
+      { code: regex }, { name: regex }, { alias: regex }, { design: regex }, { description: regex },
+      { size: regex }, { finish: regex }, { color: regex }, { material: regex }, { surface: regex },
+      { tile_type: regex }, { application: regex }, { manufacturer: regex }, { collection: regex },
+      { brand_id: { $in: brandIds } }, { category_id: { $in: categoryIds } }, { sub_category_id: { $in: categoryIds } },
+    ]
   }
-  for (const field of ['code', 'design', 'size', 'finish', 'color']) {
+  for (const field of ['code', 'design', 'size', 'finish', 'color', 'material', 'tile_type', 'application', 'manufacturer', 'collection']) {
     if (req.query[field]) query[field] = new RegExp(escapeRegex(req.query[field]), 'i')
   }
+  if (req.query.featured === 'true') query.featured = true
+  if (req.query.new_arrival === 'true') query.new_arrival = true
 
   if (req.query.category) {
     const value = String(req.query.category)
     const categoryIds = isObjectId(value)
       ? [value]
-      : await Category.find({ company_id: { $in: sellerIds }, $or: [{ name: new RegExp(escapeRegex(value), 'i') }, { code: new RegExp(escapeRegex(value), 'i') }] }).distinct('_id')
+      : await Category.find({ ...companyScope, $or: [{ name: new RegExp(escapeRegex(value), 'i') }, { code: new RegExp(escapeRegex(value), 'i') }] }).distinct('_id')
     query.category_id = { $in: categoryIds }
   }
   if (req.query.brand) {
     const value = String(req.query.brand)
     const brandIds = isObjectId(value)
       ? [value]
-      : await Brand.find({ company_id: { $in: sellerIds }, $or: [{ name: new RegExp(escapeRegex(value), 'i') }, { code: new RegExp(escapeRegex(value), 'i') }] }).distinct('_id')
+      : await Brand.find({ ...companyScope, $or: [{ name: new RegExp(escapeRegex(value), 'i') }, { code: new RegExp(escapeRegex(value), 'i') }] }).distinct('_id')
     query.brand_id = { $in: brandIds }
+  }
+  if (req.query.sub_category) {
+    const value = String(req.query.sub_category)
+    const categoryIds = isObjectId(value)
+      ? [value]
+      : await Category.find({
+        ...companyScope,
+        parent_id: { $ne: null },
+        $or: [{ name: new RegExp(escapeRegex(value), 'i') }, { code: new RegExp(escapeRegex(value), 'i') }],
+      }).distinct('_id')
+    query.sub_category_id = { $in: categoryIds }
   }
 
   const [total, products] = await Promise.all([
     Product.countDocuments(query),
     Product.find(query).select(PRODUCT_SELECT)
-      .populate('company_id', 'company_code name city state')
+      .populate('company_id', 'company_code name city state status is_active biz_type')
       .populate('brand_id', 'name code')
       .populate('category_id', 'name code')
       .populate('sub_category_id', 'name code')
@@ -308,19 +394,26 @@ async function listProducts(req, res) {
       .skip(skip).limit(limit).lean(),
   ])
   const stocks = await stockMap(products.map(product => product._id))
-  return ok(res, { products: products.map(product => productResponse(product, stocks.get(product._id.toString()))) }, 'Products retrieved.', 200, paginate(total, page, limit))
+  const pagination = paginate(total, page, limit)
+  return ok(res, {
+    products: products.map(product => productResponse(product, stocks.get(product._id.toString()), req.user)),
+    pagination,
+  }, 'Products retrieved.', 200, pagination)
 }
 
 async function getProduct(req, res) {
-  const product = await getVisibleProduct(req.params.id)
+  const product = await getCatalogueProduct(req.params.id)
   if (!product) return sendError(res, 'Product not found or unavailable.', 404)
   const stocks = await stockMap([product._id])
-  return ok(res, productResponse(product, stocks.get(product._id.toString())), 'Product retrieved.')
+  return ok(res, productResponse(product, stocks.get(product._id.toString()), req.user), 'Product retrieved.')
 }
 
 async function createEnquiry(req, res) {
-  const product = await getVisibleProduct(req.body.product_id)
+  const product = await getEnquiryProduct(req.body.product_id)
   if (!product) return sendError(res, 'Product not found or unavailable.', 404)
+  if (product.company_id.biz_type === 'Retailer') {
+    return sendError(res, 'Enquiries are not available for retailer-owned catalogue products.', 409)
+  }
   const qty = Number(req.body.qty)
   if (!Number.isFinite(qty) || qty <= 0) return sendError(res, 'qty must be greater than zero.', 400)
 

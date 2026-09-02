@@ -1,5 +1,6 @@
 const express = require('express');
 const { authenticate, requireCompany } = require('../middleware/auth');
+const { MODULES, moduleAccess } = require('../config/permissions');
 
 const router = express.Router();
 
@@ -13,55 +14,61 @@ router.use('/auth/staff', require('./Staff App Management/staffAuthRoutes'));
 router.use(authenticate);
 
 // ── Company Management ───────────────────────────────────────
-router.use('/companies', require('./Company Management/companyRoutes'));
+// Company registration/details — Super Admin (all) or Company Owner (own).
+// The controller scopes to the caller's company; guard by COMPANY module.
+router.use('/companies', moduleAccess(MODULES.COMPANY), require('./Company Management/companyRoutes'));
 
 // ── User Management ──────────────────────────────────────────
-router.use('/users', requireCompany, require('./User Management/userRoutes'));
+router.use('/users', requireCompany, moduleAccess(MODULES.USERS), require('./User Management/userRoutes'));
 
 // ── Product Management ───────────────────────────────────────
-router.use('/categories',     requireCompany, require('./Product Management/categoryRoutes'));
-router.use('/sub-categories', requireCompany, require('./Product Management/subCategoryRoutes'));
-router.use('/brands',         requireCompany, require('./Product Management/brandRoutes'));
-router.use('/products',       requireCompany, require('./Product Management/productRoutes'));
+router.use('/categories',     requireCompany, moduleAccess(MODULES.CATEGORIES), require('./Product Management/categoryRoutes'));
+router.use('/sub-categories', requireCompany, moduleAccess(MODULES.CATEGORIES), require('./Product Management/subCategoryRoutes'));
+router.use('/brands',         requireCompany, moduleAccess(MODULES.BRANDS),     require('./Product Management/brandRoutes'));
+router.use('/products',       requireCompany, moduleAccess(MODULES.PRODUCTS),   require('./Product Management/productRoutes'));
 
 // ── Purchase & Inventory Management ─────────────────────────
-router.use('/suppliers',       requireCompany, require('./Purchase & Inventory Management/supplierRoutes'));
-router.use('/purchases',       requireCompany, require('./Purchase & Inventory Management/purchaseRoutes'));
-router.use('/warehouses',      requireCompany, require('./Purchase & Inventory Management/warehouseRoutes'));
-router.use('/inventory',       requireCompany, require('./Purchase & Inventory Management/inventoryRoutes'));
-router.use('/stock-transfers', requireCompany, require('./Purchase & Inventory Management/stockTransferRoutes'));
+router.use('/suppliers',       requireCompany, moduleAccess(MODULES.SUPPLIERS),      require('./Purchase & Inventory Management/supplierRoutes'));
+router.use('/purchases',       requireCompany, moduleAccess(MODULES.PURCHASES),      require('./Purchase & Inventory Management/purchaseRoutes'));
+router.use('/warehouses',      requireCompany, moduleAccess(MODULES.WAREHOUSES),     require('./Purchase & Inventory Management/warehouseRoutes'));
+router.use('/inventory',       requireCompany, moduleAccess(MODULES.INVENTORY),      require('./Purchase & Inventory Management/inventoryRoutes'));
+router.use('/stock-transfers', requireCompany, moduleAccess(MODULES.STOCK_TRANSFER), require('./Purchase & Inventory Management/stockTransferRoutes'));
 
 // ── Marketplace Management ───────────────────────────────────
-router.use('/enquiries',  requireCompany, require('./Marketplace Management/enquiryRoutes'));
-router.use('/orders',     requireCompany, require('./Marketplace Management/orderRoutes'));
-router.use('/dispatches', requireCompany, require('./Marketplace Management/dispatchRoutes'));
+router.use('/enquiries',  requireCompany, moduleAccess(MODULES.ENQUIRIES),  require('./Marketplace Management/enquiryRoutes'));
+router.use('/orders',     requireCompany, moduleAccess(MODULES.ORDERS),     require('./Marketplace Management/orderRoutes'));
+router.use('/dispatches', requireCompany, moduleAccess(MODULES.DISPATCHES), require('./Marketplace Management/dispatchRoutes'));
 
 // ── CRM Management ───────────────────────────────────────────
-router.use('/customers', requireCompany, require('./CRM Management/customerRoutes'));
-router.use('/leads',     requireCompany, require('./CRM Management/leadRoutes'));
-router.use('/followups', requireCompany, require('./CRM Management/followupRoutes'));
+router.use('/customers', requireCompany, moduleAccess(MODULES.CUSTOMERS), require('./CRM Management/customerRoutes'));
+router.use('/leads',     requireCompany, moduleAccess(MODULES.LEADS),     require('./CRM Management/leadRoutes'));
+router.use('/followups', requireCompany, moduleAccess(MODULES.FOLLOWUPS), require('./CRM Management/followupRoutes'));
 
 // ── Finance Management ───────────────────────────────────────
-router.use('/quotations',  requireCompany, require('./Finance Management/quotationRoutes'));
-router.use('/sales',       requireCompany, require('./Finance Management/salesRoutes'));
-router.use('/expenses',    requireCompany, require('./Finance Management/expenseRoutes'));
-router.use('/payments',    requireCompany, require('./Finance Management/paymentRoutes'));
-router.use('/accounts',    requireCompany, require('./Finance Management/accountsRoutes'));
-router.use('/profit-loss', requireCompany, require('./Finance Management/profitLossRoutes'));
+router.use('/quotations',  requireCompany, moduleAccess(MODULES.QUOTATIONS),  require('./Finance Management/quotationRoutes'));
+router.use('/sales',       requireCompany, moduleAccess(MODULES.SALES),       require('./Finance Management/salesRoutes'));
+router.use('/expenses',    requireCompany, moduleAccess(MODULES.EXPENSES),    require('./Finance Management/expenseRoutes'));
+router.use('/payments',    requireCompany, moduleAccess(MODULES.PAYMENTS),    require('./Finance Management/paymentRoutes'));
+router.use('/accounts',    requireCompany, moduleAccess(MODULES.ACCOUNTS),    require('./Finance Management/accountsRoutes'));
+router.use('/profit-loss', requireCompany, moduleAccess(MODULES.PROFIT_LOSS), require('./Finance Management/profitLossRoutes'));
 
 // ── HR Management ─────────────────────────────────────────────
-router.use('/employees',  requireCompany, require('./HR Management/employeeRoutes'));
-router.use('/attendance', requireCompany, require('./HR Management/attendanceRoutes'));
-router.use('/salary',     requireCompany, require('./HR Management/salaryRoutes'));
+router.use('/employees',  requireCompany, moduleAccess(MODULES.EMPLOYEES),  require('./HR Management/employeeRoutes'));
+router.use('/attendance', requireCompany, moduleAccess(MODULES.ATTENDANCE), require('./HR Management/attendanceRoutes'));
+router.use('/salary',     requireCompany, moduleAccess(MODULES.SALARY),     require('./HR Management/salaryRoutes'));
 
 // ── Reports Management ────────────────────────────────────────
-router.use('/reports/dashboard', requireCompany, require('./Reports Management/dashboardRoutes'));
-router.use('/reports',           requireCompany, require('./Reports Management/reportRoutes'));
+router.use('/reports/dashboard', requireCompany, moduleAccess(MODULES.DASHBOARD), require('./Reports Management/dashboardRoutes'));
+router.use('/reports',           requireCompany, moduleAccess(MODULES.REPORTS),   require('./Reports Management/reportRoutes'));
 
 // ── System Management ─────────────────────────────────────────
-router.use('/notifications', requireCompany, require('./System Management/notificationRoutes'));
-router.use('/documents',     requireCompany, require('./System Management/documentRoutes'));
-router.use('/subscriptions', requireCompany, require('./System Management/subscriptionRoutes'));
-router.use('/profile',       requireCompany, require('./System Management/profileRoutes'));
+router.use('/notifications', requireCompany, moduleAccess(MODULES.NOTIFICATIONS), require('./System Management/notificationRoutes'));
+router.use('/documents',     requireCompany, moduleAccess(MODULES.DOCUMENTS),     require('./System Management/documentRoutes'));
+router.use('/subscriptions', requireCompany, moduleAccess(MODULES.SUBSCRIPTIONS), require('./System Management/subscriptionRoutes'));
+router.use('/profile',       requireCompany, moduleAccess(MODULES.PROFILE),       require('./System Management/profileRoutes'));
+
+// Role & Permission Management — admin config (guarded inside the route file).
+// '/me' is readable by any authenticated company user to drive their own menu.
+router.use('/role-permissions', requireCompany, require('./System Management/rolePermissionRoutes'));
 
 module.exports = router;

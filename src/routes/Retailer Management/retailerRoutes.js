@@ -50,6 +50,7 @@ router.patch('/enquiries/:id/offers/:offerId', marketplace.respondToOffer)
 router.get('/my-products', myProducts.listMyProducts)
 router.post('/my-products', uploadImages, myProducts.createMyProduct)
 router.get('/my-products/:id', myProducts.getMyProduct)
+router.put('/my-products/:id', uploadImages, myProducts.updateMyProduct)
 router.delete('/my-products/:id', myProducts.deleteMyProduct)
 
 router.get('/orders', marketplace.listOrders)

@@ -3,6 +3,7 @@ const path         = require('path')
 const fs           = require('fs')
 const Company      = require('../../models/Company Management/Company')
 const User         = require('../../models/User Management/User')
+const Product      = require('../../models/Product Management/Product')
 const Notification = require('../../models/System Management/Notification')
 const { notifyRetailer } = require('../../utils/pushHelper')
 const { getNextCompanyCode } = require('../../utils/sequence')
@@ -100,12 +101,19 @@ async function updateCompany(req, res) {
 
 /** PATCH /api/companies/:id/approve */
 async function approveCompany(req, res) {
-  const company = await Company.findByIdAndUpdate(
-    req.params.id,
-    { status: 'Approved', reviewed_by: req.user._id },
-    { new: true }
-  ).lean()
+  const company = await Company.findById(req.params.id)
   if (!company) return sendError(res, 'Company not found.', 404)
+
+  company.status = 'Approved'
+  company.reject_reason = ''
+  company.reviewed_by = req.user._id
+  const reviewedAt = new Date()
+  for (const document of company.kyc_documents || []) {
+    document.status = 'Approved'
+    document.reject_reason = ''
+    document.reviewed_at = reviewedAt
+  }
+  await company.save()
 
   // Ensure all users of this company are active
   await User.updateMany({ company_id: company._id }, { is_active: true })
@@ -140,12 +148,20 @@ async function approveCompany(req, res) {
 /** PATCH /api/companies/:id/reject */
 async function rejectCompany(req, res) {
   const { reject_reason } = req.body
-  const company = await Company.findByIdAndUpdate(
-    req.params.id,
-    { status: 'Rejected', reject_reason: reject_reason || '', reviewed_by: req.user._id },
-    { new: true }
-  ).lean()
+  const reason = String(reject_reason || '').trim()
+  const company = await Company.findById(req.params.id)
   if (!company) return sendError(res, 'Company not found.', 404)
+
+  company.status = 'Rejected'
+  company.reject_reason = reason
+  company.reviewed_by = req.user._id
+  const reviewedAt = new Date()
+  for (const document of company.kyc_documents || []) {
+    document.status = 'Rejected'
+    document.reject_reason = reason
+    document.reviewed_at = reviewedAt
+  }
+  await company.save()
 
   // Find owner and notify about rejection
   const owner = await User.findOne({ company_id: company._id, role: { $in: ['Company Owner', 'Retailer'] } }).lean()
@@ -155,7 +171,7 @@ async function rejectCompany(req, res) {
       user_id:      owner._id,
       type:         'rejection',
       title:        '❌ Application Rejected',
-      message:      `Your company registration has been rejected. Reason: ${reject_reason || 'Not specified'}. Please contact support for more information.`,
+      message:      `Your company registration has been rejected. Reason: ${reason || 'Not specified'}. Please contact support for more information.`,
       reference_id: company._id,
       is_read:      false,
     }).catch(() => {})
@@ -163,7 +179,7 @@ async function rejectCompany(req, res) {
     // Send push notification to retailer
     notifyRetailer(owner._id, {
       title: 'Application Rejected',
-      body: `Your registration was rejected. Reason: ${reject_reason || 'Not specified'}.`,
+      body: `Your registration was rejected. Reason: ${reason || 'Not specified'}.`,
       type: 'rejection',
       referenceId: company._id,
     })
@@ -203,6 +219,15 @@ async function updateDocs(req, res) {
 async function deleteCompany(req, res) {
   const company = await Company.findById(req.params.id).lean()
   if (!company) return sendError(res, 'Company not found.', 404)
+
+  const linkedProductCount = await Product.countDocuments({ company_id: company._id })
+  if (linkedProductCount > 0) {
+    return sendError(
+      res,
+      `Cannot delete this company because it owns ${linkedProductCount} product${linkedProductCount === 1 ? '' : 's'}. Delete or reassign those products first.`,
+      409
+    )
+  }
 
   // Delete all users associated with this company
   await User.deleteMany({ company_id: company._id })

@@ -10,6 +10,7 @@ const path        = require('path')
 
 // ── Config ───────────────────────────────────────────────────
 const connectDB = require('./config/database')
+const { MODULES, moduleAccess } = require('./config/permissions')
 
 // ── Utils ────────────────────────────────────────────────────
 const { logger }                     = require('./utils/logger')
@@ -21,6 +22,7 @@ const { rateLimiter }        = require('./middleware/rateLimiter')
 const { authenticate,
         requireCompany }     = require('./middleware/auth')
 const { requireRetailerIdentity,
+        requireApprovedSeller,
         denyRetailerErpAccess } = require('./middleware/retailerAccess')
 
 // ── Routes ───────────────────────────────────────────────────
@@ -57,9 +59,11 @@ const notificationRoutes = require('./routes/System Management/notificationRoute
 const documentRoutes     = require('./routes/System Management/documentRoutes')
 const subscriptionRoutes = require('./routes/System Management/subscriptionRoutes')
 const profileRoutes      = require('./routes/System Management/profileRoutes')
+const rolePermissionRoutes = require('./routes/System Management/rolePermissionRoutes')
 const quotationRoutes    = require('./routes/Finance Management/quotationRoutes')
 const invoiceRoutes      = require('./routes/Finance Management/invoiceRoutes')
-const wholesalerAuthRoutes = require('./routes/Wholesaler Management/wholesalerAuthRoutes')
+const wholesalerAuthRoutes    = require('./routes/Wholesaler Management/wholesalerAuthRoutes')
+const wholesalerCatalogRoutes = require('./routes/Wholesaler Management/wholesalerCatalogRoutes')
 const retailerAuthRoutes   = require('./routes/Retailer Management/retailerAuthRoutes')
 const retailerRoutes       = require('./routes/Retailer Management/retailerRoutes')
 const staffAuthRoutes      = require('./routes/Staff App Management/staffAuthRoutes')
@@ -78,7 +82,7 @@ app.use(cors({
     'http://10.67.41.163:5173',   // frontend on this machine
     'http://10.67.41.163',        // mobile device
     'http://10.67.41.163:8081',   // React Native Metro dev server on device
-    'http://192.168.1.8',        // alternate device IP
+    'http://192.168.1.8',         // alternate device IP
     'http://192.168.1.8:8081',
     'http://192.168.1.45',        // this machine (Wi-Fi) — retailer device
     'http://192.168.1.45:5173',
@@ -112,6 +116,7 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth',              authRoutes)
 app.use('/api/auth/staff',        staffAuthRoutes)
 app.use('/api/wholesaler/auth',   wholesalerAuthRoutes)
+app.use('/api/wholesaler',        authenticate, requireApprovedSeller, wholesalerCatalogRoutes)
 app.use('/api/retailer/auth',     retailerAuthRoutes)
 app.use('/api/retailer',          authenticate, requireRetailerIdentity, retailerRoutes)
 
@@ -126,60 +131,62 @@ const ERP_ROUTE_PREFIXES = [
   '/api/payments', '/api/accounts', '/api/profit-loss', '/api/quotations', '/api/invoices',
   '/api/employees', '/api/employee-master', '/api/attendance', '/api/salary',
   '/api/reports', '/api/notifications', '/api/documents', '/api/subscriptions', '/api/profile',
+  '/api/role-permissions',
 ]
 app.use(ERP_ROUTE_PREFIXES, authenticate, denyRetailerErpAccess)
 
 // ── Protected Routes ──────────────────────────────────────────
-app.use('/api/companies',     authenticate, companyRoutes)
-app.use('/api/companies',     authenticate, branchRoutes)   // /api/companies/:companyId/branches
-app.use('/api/branches',      authenticate, requireCompany, branchRoutes) // standalone branch access
-app.use('/api/users',         authenticate, requireCompany, userRoutes)
+app.use('/api/companies',     authenticate, moduleAccess(MODULES.COMPANY), companyRoutes)
+app.use('/api/companies',     authenticate, moduleAccess(MODULES.BRANCH), branchRoutes)   // /api/companies/:companyId/branches
+app.use('/api/branches',      authenticate, requireCompany, moduleAccess(MODULES.BRANCH), branchRoutes) // standalone branch access
+app.use('/api/users',         authenticate, requireCompany, moduleAccess(MODULES.USERS), userRoutes)
 
 // ── Product & Inventory ───────────────────────────────────────
-app.use('/api/categories',     authenticate, requireCompany, categoryRoutes)
-app.use('/api/sub-categories', authenticate, requireCompany, require('./routes/Product Management/subCategoryRoutes'))
-app.use('/api/brands',         authenticate, requireCompany, brandRoutes)
-app.use('/api/products',       authenticate, requireCompany, productRoutes)
-app.use('/api/inventory',      authenticate, requireCompany, inventoryRoutes)
-app.use('/api/warehouses',     authenticate, requireCompany, warehouseRoutes)
-app.use('/api/suppliers',      authenticate, requireCompany, supplierRoutes)
+app.use('/api/categories',     authenticate, requireCompany, moduleAccess(MODULES.CATEGORIES), categoryRoutes)
+app.use('/api/sub-categories', authenticate, requireCompany, moduleAccess(MODULES.CATEGORIES), require('./routes/Product Management/subCategoryRoutes'))
+app.use('/api/brands',         authenticate, requireCompany, moduleAccess(MODULES.BRANDS), brandRoutes)
+app.use('/api/products',       authenticate, requireCompany, moduleAccess(MODULES.PRODUCTS), productRoutes)
+app.use('/api/inventory',      authenticate, requireCompany, moduleAccess(MODULES.INVENTORY), inventoryRoutes)
+app.use('/api/warehouses',     authenticate, requireCompany, moduleAccess(MODULES.WAREHOUSES), warehouseRoutes)
+app.use('/api/suppliers',      authenticate, requireCompany, moduleAccess(MODULES.SUPPLIERS), supplierRoutes)
 
 // ── Marketplace ───────────────────────────────────────────────
-app.use('/api/enquiries',     authenticate, requireCompany, enquiryRoutes)
-app.use('/api/orders',        authenticate, requireCompany, orderRoutes)
-app.use('/api/dispatches',    authenticate, requireCompany, dispatchRoutes)
+app.use('/api/enquiries',     authenticate, requireCompany, moduleAccess(MODULES.ENQUIRIES), enquiryRoutes)
+app.use('/api/orders',        authenticate, requireCompany, moduleAccess(MODULES.ORDERS), orderRoutes)
+app.use('/api/dispatches',    authenticate, requireCompany, moduleAccess(MODULES.DISPATCHES), dispatchRoutes)
 
 // ── CRM ───────────────────────────────────────────────────────
-app.use('/api/customers',     authenticate, requireCompany, customerRoutes)
-app.use('/api/leads',         authenticate, requireCompany, leadRoutes)
-app.use('/api/followups',     authenticate, requireCompany, followupRoutes)
+app.use('/api/customers',     authenticate, requireCompany, moduleAccess(MODULES.CUSTOMERS), customerRoutes)
+app.use('/api/leads',         authenticate, requireCompany, moduleAccess(MODULES.LEADS), leadRoutes)
+app.use('/api/followups',     authenticate, requireCompany, moduleAccess(MODULES.FOLLOWUPS), followupRoutes)
 
 // ── Finance ───────────────────────────────────────────────────
-app.use('/api/purchases',     authenticate, requireCompany, purchaseRoutes)
-app.use('/api/stock-transfers', authenticate, requireCompany, stockTransferRoutes)
-app.use('/api/sales',         authenticate, requireCompany, salesRoutes)
-app.use('/api/expenses',      authenticate, requireCompany, expenseRoutes)
-app.use('/api/payments',      authenticate, requireCompany, paymentRoutes)
-app.use('/api/accounts',      authenticate, requireCompany, accountsRoutes)
-app.use('/api/profit-loss',   authenticate, requireCompany, profitLossRoutes)
-app.use('/api/quotations',    authenticate, requireCompany, quotationRoutes)
-app.use('/api/invoices',      authenticate, requireCompany, invoiceRoutes)
+app.use('/api/purchases',     authenticate, requireCompany, moduleAccess(MODULES.PURCHASES), purchaseRoutes)
+app.use('/api/stock-transfers', authenticate, requireCompany, moduleAccess(MODULES.STOCK_TRANSFER), stockTransferRoutes)
+app.use('/api/sales',         authenticate, requireCompany, moduleAccess(MODULES.SALES), salesRoutes)
+app.use('/api/expenses',      authenticate, requireCompany, moduleAccess(MODULES.EXPENSES), expenseRoutes)
+app.use('/api/payments',      authenticate, requireCompany, moduleAccess(MODULES.PAYMENTS), paymentRoutes)
+app.use('/api/accounts',      authenticate, requireCompany, moduleAccess(MODULES.ACCOUNTS), accountsRoutes)
+app.use('/api/profit-loss',   authenticate, requireCompany, moduleAccess(MODULES.PROFIT_LOSS), profitLossRoutes)
+app.use('/api/quotations',    authenticate, requireCompany, moduleAccess(MODULES.QUOTATIONS), quotationRoutes)
+app.use('/api/invoices',      authenticate, requireCompany, moduleAccess(MODULES.INVOICES), invoiceRoutes)
 
 // ── HR ────────────────────────────────────────────────────────
-app.use('/api/employees',        authenticate, requireCompany, employeeRoutes)
-app.use('/api/employee-master',  authenticate, requireCompany, employeeMasterRoutes)
-app.use('/api/attendance',       authenticate, requireCompany, attendanceRoutes)
-app.use('/api/salary',           authenticate, requireCompany, salaryRoutes)
+app.use('/api/employees',        authenticate, requireCompany, moduleAccess(MODULES.EMPLOYEES), employeeRoutes)
+app.use('/api/employee-master',  authenticate, requireCompany, moduleAccess(MODULES.EMPLOYEE_MASTER), employeeMasterRoutes)
+app.use('/api/attendance',       authenticate, requireCompany, moduleAccess(MODULES.ATTENDANCE), attendanceRoutes)
+app.use('/api/salary',           authenticate, requireCompany, moduleAccess(MODULES.SALARY), salaryRoutes)
 
 // ── Reports & Analytics ───────────────────────────────────────
-app.use('/api/reports/dashboard', authenticate, requireCompany, dashboardRoutes)
-app.use('/api/reports',           authenticate, requireCompany, reportRoutes)
+app.use('/api/reports/dashboard', authenticate, requireCompany, moduleAccess(MODULES.DASHBOARD), dashboardRoutes)
+app.use('/api/reports',           authenticate, requireCompany, moduleAccess(MODULES.REPORTS), reportRoutes)
 
 // ── System ────────────────────────────────────────────────────
-app.use('/api/notifications', authenticate, requireCompany, notificationRoutes)
-app.use('/api/documents',     authenticate, requireCompany, documentRoutes)
-app.use('/api/subscriptions', authenticate, requireCompany, subscriptionRoutes)
+app.use('/api/notifications', authenticate, requireCompany, moduleAccess(MODULES.NOTIFICATIONS), notificationRoutes)
+app.use('/api/documents',     authenticate, requireCompany, moduleAccess(MODULES.DOCUMENTS), documentRoutes)
+app.use('/api/subscriptions', authenticate, requireCompany, moduleAccess(MODULES.SUBSCRIPTIONS), subscriptionRoutes)
 app.use('/api/profile',       authenticate, profileRoutes)
+app.use('/api/role-permissions', authenticate, requireCompany, rolePermissionRoutes)
 
 // ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {

@@ -197,25 +197,8 @@ async function register(req, res) {
     companyName, ownerName, mobile, email, password,
     gstNumber, panNumber, address, city, state, pincode,
   } = req.body
-  let { verificationToken } = req.body
 
-  // Dev mode bypass: auto-generate verification token if not provided
-  if (!verificationToken && (process.env.OTP_DEV_RETURN === 'true' || process.env.NODE_ENV === 'development')) {
-    const cleanMobile = String(mobile || '').trim()
-    if (/^\d{10}$/.test(cleanMobile)) {
-      const grant = await RegistrationVerification.create({
-        mobile: cleanMobile,
-        expires_at: new Date(Date.now() + 10 * 60 * 1000),
-      })
-      verificationToken = jwt.sign(
-        { type: 'retailer_registration', mobile: cleanMobile, verificationId: grant._id.toString() },
-        process.env.JWT_SECRET,
-        { expiresIn: REGISTRATION_TOKEN_TTL }
-      )
-    }
-  }
-
-  const required = { companyName, ownerName, mobile, email, verificationToken }
+  const required = { companyName, ownerName, mobile, email }
   for (const [field, value] of Object.entries(required)) {
     if (!value || !String(value).trim()) return sendError(res, `${field} is required.`, 400)
   }
@@ -226,29 +209,12 @@ async function register(req, res) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) return sendError(res, 'Please provide a valid email address.', 400)
   if (password && String(password).length < 6) return sendError(res, 'Password must be at least 6 characters.', 400)
 
-  let decoded
-  try {
-    decoded = jwt.verify(String(verificationToken), process.env.JWT_SECRET)
-  } catch (_error) {
-    return sendError(res, 'Registration verification token is invalid or expired.', 401)
-  }
-  if (decoded.type !== 'retailer_registration' || decoded.mobile !== cleanMobile || !decoded.verificationId) {
-    return sendError(res, 'Registration verification token does not match this mobile number.', 401)
-  }
-
   const [existingMobile, existingEmail] = await Promise.all([
     User.exists({ mobile: cleanMobile }),
     User.exists({ email: cleanEmail }),
   ])
   if (existingMobile) return sendError(res, 'This mobile number is already registered.', 409)
   if (existingEmail) return sendError(res, 'This email address is already registered.', 409)
-
-  const grant = await RegistrationVerification.findOneAndUpdate(
-    { _id: decoded.verificationId, mobile: cleanMobile, used_at: null, expires_at: { $gt: new Date() } },
-    { used_at: new Date() },
-    { new: true }
-  ).lean()
-  if (!grant) return sendError(res, 'Registration verification token has expired or already been used.', 401)
 
   let company
   try {
@@ -289,7 +255,6 @@ async function register(req, res) {
     }, 'Registration successful. Your account is pending admin approval.', 201)
   } catch (error) {
     if (company?._id) await Company.deleteOne({ _id: company._id }).catch(() => {})
-    await RegistrationVerification.updateOne({ _id: decoded.verificationId }, { used_at: null }).catch(() => {})
     if (error?.code === 11000) return sendError(res, 'Mobile, email, or company code is already registered.', 409)
     throw error
   }

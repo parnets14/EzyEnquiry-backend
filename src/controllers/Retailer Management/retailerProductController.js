@@ -36,6 +36,17 @@ function str(value) {
   return typeof value === 'string' ? value.trim() : (value != null ? String(value).trim() : '')
 }
 
+function imageUrlList(value) {
+  if (Array.isArray(value)) return value.map(str).filter(Boolean)
+  if (typeof value !== 'string' || !value.trim()) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.map(str).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
 // Find-or-create a Brand by name under the retailer's company.
 async function resolveBrand(name, companyId) {
   const clean = str(name)
@@ -85,12 +96,23 @@ function productResponse(product) {
     prices: {
       mrp: product.mrp, retail_price: product.retail_price, dealer_price: product.dealer_price,
       wholesale_rate: product.wholesale_rate, project_rate: product.project_rate,
-      purchase_price: product.purchase_price,
+      purchase_price: product.purchase_price, landing_cost: product.landing_cost,
+      min_selling_rate: product.min_selling_rate,
+    },
+    stock: {
+      min_stock_level: product.min_stock_level,
+      reorder_level: product.reorder_level,
+    },
+    classification: {
+      sales_type: product.sales_type || '',
+      product_type: product.product_type || '',
     },
     flags: {
       new_arrival: !!product.new_arrival, featured: !!product.featured,
       online_visible: product.online_visible !== false, dealer_visible: product.dealer_visible !== false,
     },
+    added_by_type: product.created_by_type || 'Retailer',
+    can_manage: true,
     image_urls: product.image_urls || [],
     status: product.status,
     created_at: product.created_at,
@@ -125,6 +147,8 @@ async function createMyProduct(req, res) {
 
   const product = await Product.create({
     company_id: companyId,
+    created_by: req.user._id || req.user.id,
+    created_by_type: 'Retailer',
     code,
     name,
     alias: str(body.alias),
@@ -229,6 +253,108 @@ async function getMyProduct(req, res) {
   return ok(res, productResponse(product), 'Product retrieved.')
 }
 
+// ─── Update a product owned by the retailer's own company ──────────────────────
+async function updateMyProduct(req, res) {
+  const companyId = req.user.company_id
+  const body = req.body || {}
+  const current = await Product.findOne({
+    _id: req.params.id,
+    company_id: companyId,
+    status: { $ne: 'deleted' },
+  })
+  if (!current) return sendError(res, 'Product not found.', 404)
+
+  const has = key => Object.prototype.hasOwnProperty.call(body, key)
+  const firstPresent = keys => keys.find(has)
+
+  const name = has('name') ? str(body.name) : current.name
+  if (!name) return sendError(res, 'Product name is required.')
+
+  const code = has('code') ? (str(body.code) || current.code) : current.code
+  const duplicate = await Product.findOne({
+    _id: { $ne: current._id },
+    code,
+    company_id: companyId,
+    status: { $ne: 'deleted' },
+  }).lean()
+  if (duplicate) return sendError(res, `A product with code "${code}" already exists.`, 409)
+
+  const brandKey = firstPresent(['brand_name', 'brand'])
+  const categoryKey = firstPresent(['category_name', 'category'])
+  const subCategoryKey = firstPresent(['sub_category_name', 'sub_category'])
+  const updateData = { code, name }
+
+  if (brandKey) updateData.brand_id = await resolveBrand(body[brandKey], companyId)
+  let categoryId = current.category_id
+  if (categoryKey) {
+    categoryId = await resolveCategory(body[categoryKey], companyId, null)
+    updateData.category_id = categoryId
+    if (!subCategoryKey) updateData.sub_category_id = null
+  }
+  if (subCategoryKey) {
+    updateData.sub_category_id = categoryId
+      ? await resolveCategory(body[subCategoryKey], companyId, categoryId)
+      : null
+  }
+
+  const stringFields = [
+    'alias', 'hsn_code', 'size', 'finish', 'material', 'color', 'surface',
+    'thickness', 'grade', 'tile_type', 'application', 'anti_skid', 'origin',
+    'manufacturer', 'barcode', 'design', 'collection', 'description',
+  ]
+  stringFields.forEach(field => {
+    if (has(field)) updateData[field] = str(body[field])
+  })
+
+  const nullableNumberFields = ['pcs_per_box', 'sqft_per_box', 'weight_per_box']
+  nullableNumberFields.forEach(field => {
+    if (has(field)) updateData[field] = num(body[field])
+  })
+  if (has('unit')) updateData.unit = str(body.unit) || 'Box'
+  if (has('gst_percent')) updateData.gst_percent = num(body.gst_percent) ?? 18
+
+  const moneyFields = [
+    ['landing_cost', ['landing_cost']],
+    ['mrp', ['mrp']],
+    ['retail_price', ['retail_rate', 'retail_price']],
+    ['dealer_price', ['dealer_rate', 'dealer_price']],
+    ['wholesale_rate', ['wholesale_rate']],
+    ['project_rate', ['project_rate']],
+    ['min_selling_rate', ['min_selling_rate']],
+  ]
+  const purchaseKey = firstPresent(['purchase_rate', 'purchase_price'])
+  if (purchaseKey) updateData.purchase_price = money(body[purchaseKey])
+  moneyFields.forEach(([field, keys]) => {
+    const key = firstPresent(keys)
+    if (key) updateData[field] = money(body[key])
+  })
+  if (has('min_stock_level')) updateData.min_stock_level = num(body.min_stock_level) ?? 0
+  if (has('reorder_level')) updateData.reorder_level = num(body.reorder_level) ?? 0
+  if (has('sales_type')) updateData.sales_type = str(body.sales_type) || 'Regular Sale'
+  if (has('product_type')) updateData.product_type = str(body.product_type) || 'Regular Product'
+  if (has('new_arrival')) updateData.new_arrival = bool(body.new_arrival)
+  if (has('featured')) updateData.featured = bool(body.featured)
+
+  const uploadedImages = (req.files || []).map(file => `/uploads/images/${file.filename}`)
+  if (has('image_urls') || uploadedImages.length > 0) {
+    const allowedExistingImages = new Set((current.image_urls || []).map(String))
+    const retainedImages = has('image_urls')
+      ? imageUrlList(body.image_urls).filter(url => allowedExistingImages.has(url))
+      : [...allowedExistingImages]
+    updateData.image_urls = [...retainedImages, ...uploadedImages].slice(0, 10)
+  }
+
+  current.set(updateData)
+  await current.save()
+
+  const populated = await Product.findById(current._id)
+    .populate('brand_id', 'name')
+    .populate('category_id', 'name')
+    .populate('sub_category_id', 'name')
+    .lean()
+  return ok(res, productResponse(populated), 'Product updated.')
+}
+
 // ─── Soft-delete the retailer's own product ────────────────────────────────────
 async function deleteMyProduct(req, res) {
   const product = await Product.findOne({ _id: req.params.id, company_id: req.user.company_id, status: { $ne: 'deleted' } })
@@ -241,4 +367,4 @@ async function deleteMyProduct(req, res) {
   return ok(res, { id: product._id }, 'Product deleted.')
 }
 
-module.exports = { createMyProduct, listMyProducts, getMyProduct, deleteMyProduct }
+module.exports = { createMyProduct, listMyProducts, getMyProduct, updateMyProduct, deleteMyProduct }

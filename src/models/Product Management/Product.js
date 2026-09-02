@@ -3,6 +3,8 @@ const mongoose = require('mongoose')
 const productSchema = new mongoose.Schema(
   {
     company_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
+    created_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, immutable: true },
+    created_by_type: { type: String, enum: ['Admin', 'Wholesaler', 'Retailer'], default: null, immutable: true },
     code:            { type: String, required: true, trim: true },
     name:            { type: String, required: true, trim: true },
     alias:           { type: String, default: '' },
@@ -69,8 +71,9 @@ const productSchema = new mongoose.Schema(
     image_urls: { type: [String], default: [] },
 
     // Soft delete
-    deleted_at: { type: Date, default: null },
-    deleted_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    deleted_at:         { type: Date, default: null },
+    deleted_by:         { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    deleted_was_active: { type: Boolean, default: null },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 )
