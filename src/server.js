@@ -151,6 +151,11 @@ app.use('/api/wholesaler/products',   authenticate, wholesalerProductRoutes)
 app.use('/api/wholesaler/inventory',  authenticate, wholesalerInventoryRoutes)
 app.use('/api/wholesaler/warehouses', authenticate, require('./routes/Wholesaler Management/wholesalerWarehouseRoutes'))
 app.use('/api/wholesaler/purchases',  authenticate, require('./routes/Wholesaler Management/wholesalerPurchaseRoutes'))
+app.use('/api/wholesaler/all-purchases', authenticate, require('./routes/Wholesaler Management/wholesalerAdminRoutes'))
+app.use('/api/wholesaler/quotations',    authenticate, require('./routes/Wholesaler Management/wholesalerQuotationRoutes'))
+app.use('/api/wholesaler/all-quotations', authenticate, require('./routes/Wholesaler Management/wholesalerAdminQuotationRoutes'))
+app.use('/api/wholesaler/all-products',   authenticate, require('./routes/Wholesaler Management/wholesalerAdminProductRoutes'))
+app.use('/api/wholesaler/invoices',       authenticate, require('./routes/Wholesaler Management/wholesalerInvoiceRoutes'))
 
 // ── Protected Routes ──────────────────────────────────────────
 app.use('/api/companies',     authenticate, moduleAccess(MODULES.COMPANY), companyRoutes)
