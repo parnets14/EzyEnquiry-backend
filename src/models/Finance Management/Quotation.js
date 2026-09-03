@@ -34,6 +34,12 @@ const quotationSchema = new mongoose.Schema(
   {
     company_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     quotation_no:    { type: String, default: '' },
+    // Retailer marketplace origin — set when a retailer sends an enquiry on an
+    // Admin product. Lets an accepted quotation create a retailer-visible order.
+    buyer_company_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null },
+    buyer_user_id:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    source:           { type: String, default: '' },
+    order_id:         { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
     enquiry_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', default: null },
     enquiry_no:      { type: String, default: '' },
     delivery_no:     { type: String, default: '' },
@@ -52,6 +58,13 @@ const quotationSchema = new mongoose.Schema(
     terms:           { type: String, default: '' },
     status:          { type: String, enum: ['draft', 'sent', 'accepted', 'converted', 'expired', 'cancelled'], default: 'draft' },
     created_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    created_by_name: { type: String, default: '' },
+    // Who created/sent this (the retailer business + person + contact).
+    created_by_company: { type: String, default: '' },
+    created_by_person:  { type: String, default: '' },
+    created_by_mobile:  { type: String, default: '' },
+    created_by_email:   { type: String, default: '' },
+    created_by_type:    { type: String, default: '' }, // Admin | Wholesaler | Retailer App | Staff App
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

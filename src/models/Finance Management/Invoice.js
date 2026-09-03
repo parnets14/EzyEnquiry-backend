@@ -97,6 +97,21 @@ const invoiceSchema = new mongoose.Schema(
     },
     payment_history:  { type: [paymentHistorySchema], default: [] },
 
+    // ── Who created/sent the underlying order (the retailer) ──
+    // Who generated this invoice (the Admin/seller staff).
+    created_by_name:    { type: String, default: '' },
+    created_by_company: { type: String, default: '' },
+    created_by_person:  { type: String, default: '' },
+    created_by_mobile:  { type: String, default: '' },
+    created_by_email:   { type: String, default: '' },
+    created_by_type:    { type: String, default: '' }, // Admin | Wholesaler | Retailer App | Staff App
+
+    // The retailer this supply was routed through (who raised the order).
+    retailer_name:    { type: String, default: '' },
+    retailer_company: { type: String, default: '' },
+    retailer_mobile:  { type: String, default: '' },
+    retailer_email:   { type: String, default: '' },
+
     // ── Meta ───────────────────────────────────────────────
     remarks:          { type: String, default: '' },
     terms:            { type: String, default: '' },

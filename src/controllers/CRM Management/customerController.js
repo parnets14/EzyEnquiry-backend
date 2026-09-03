@@ -84,6 +84,9 @@ async function createCustomer(req, res) {
     pincode:      req.body.pincode      || '',
     biz_type:     req.body.biz_type     || 'Retailer',
     credit_limit: req.body.credit_limit || 0,
+    created_by:      req.user._id || req.user.id || null,
+    created_by_name: req.user.name || '',
+    created_by_type: 'Admin',
   });
   sendSuccess(res, customer, 'Customer created.', 201);
 }

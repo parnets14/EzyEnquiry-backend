@@ -15,8 +15,28 @@ const ORDER_STATUSES = [
   'Sorting Started', 'Sorting Completed',
   'Packing Started', 'Packing Completed',
   'Invoice Generated', 'Ready for Dispatch',
+  'Partially Dispatched',
   'Dispatched', 'In Transit', 'Delivered', 'Cancelled',
 ];
+
+// One partial packing batch: a slice of the order packed → invoiced → dispatched.
+const packageSchema = new mongoose.Schema({
+  pack_no:        { type: Number, default: 1 },
+  qty:            { type: Number, required: true },
+  amount:         { type: Number, default: 0 },
+  gst_amount:     { type: Number, default: 0 },
+  total:          { type: Number, default: 0 },
+  invoice_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', default: null },
+  invoice_number: { type: String, default: '' },
+  dispatch_id:    { type: mongoose.Schema.Types.ObjectId, ref: 'Dispatch', default: null },
+  dispatch_code:  { type: String, default: '' },
+  vehicle_number: { type: String, default: '' },
+  transport_name: { type: String, default: '' },
+  lr_number:      { type: String, default: '' },
+  packed_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  packed_by_name: { type: String, default: '' },
+  packed_at:      { type: Date, default: Date.now },
+}, { _id: true });
 
 const orderSchema = new mongoose.Schema(
   {
@@ -59,10 +79,20 @@ const orderSchema = new mongoose.Schema(
     invoice_date:     { type: Date, default: null },
     dispatch_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Dispatch', default: null },
     delivered_date:   { type: Date, default: null },
+    // Partial fulfillment tracking
+    packed_qty:       { type: Number, default: 0 },
+    dispatched_qty:   { type: Number, default: 0 },
+    packages:         [packageSchema],
     status_history:   [historySchema],
     notes:            { type: String, default: '' },
     created_by:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     created_by_name:  { type: String, default: '' },
+    // Who created/sent this (the retailer business + person + contact).
+    created_by_company: { type: String, default: '' },
+    created_by_person:  { type: String, default: '' },
+    created_by_mobile:  { type: String, default: '' },
+    created_by_email:   { type: String, default: '' },
+    created_by_type:    { type: String, default: '' }, // Admin | Wholesaler | Retailer App | Staff App
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

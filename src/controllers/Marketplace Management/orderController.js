@@ -2,7 +2,13 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
 const Order        = require('../../models/Marketplace Management/Order');
 const Enquiry      = require('../../models/Marketplace Management/Enquiry');
 const Notification = require('../../models/System Management/Notification');
+const Invoice      = require('../../models/Finance Management/Invoice');
+const Dispatch     = require('../../models/Marketplace Management/Dispatch');
+const Company      = require('../../models/Company Management/Company');
+const User         = require('../../models/User Management/User');
 const { notifyRetailer } = require('../../utils/pushHelper');
+
+const round2 = n => Math.round((Number(n) || 0) * 100) / 100;
 
 const ORDER_STATUSES = [
   'New', 'Pending Approval', 'Approved',
@@ -364,8 +370,233 @@ async function deleteOrder(req, res) {
   sendSuccess(res, null, 'Order deleted.');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Code generators for the partial-pack flow
+// ─────────────────────────────────────────────────────────────────────────────
+async function nextInvoiceNo(companyId) {
+  const last = await Invoice.findOne({ company_id: companyId, invoice_no: /^INV-/ })
+    .sort({ created_at: -1 }).select('invoice_no').lean();
+  const num = last?.invoice_no ? parseInt(String(last.invoice_no).split('-').pop(), 10) : 0;
+  return `INV-${String((num || 0) + 1).padStart(4, '0')}`;
+}
+
+async function nextDispatchCode() {
+  const last = await Dispatch.findOne({ dispatch_code: /^DIS-/ }).sort({ dispatch_code: -1 }).select('dispatch_code').lean();
+  const num = last?.dispatch_code ? parseInt(String(last.dispatch_code).split('-')[1], 10) : 0;
+  return `DIS-${String((num || 0) + 1).padStart(4, '0')}`;
+}
+
+/**
+ * POST /api/orders/:id/pack
+ * Partial packing: pack a slice of the order (pack_qty), create an Invoice + a
+ * Dispatch for exactly that quantity, update the order's packed/dispatched
+ * counters, and append a package record. Repeat until fully fulfilled.
+ *
+ * Body: { pack_qty, vehicle_number, driver_name, driver_mobile, transport_name,
+ *         lr_number, dispatch_date, expected_delivery_days, expected_delivery, branch_name }
+ */
+async function packOrder(req, res) {
+  const order = await Order.findOne({ _id: req.params.id, company_id: req.user.company_id });
+  if (!order) return sendError(res, 'Order not found.', 404);
+  if (['Cancelled'].includes(order.status)) return sendError(res, 'Cancelled orders cannot be packed.', 409);
+
+  const orderedQty     = Number(order.qty) || 0;
+  const alreadyShipped = Number(order.dispatched_qty) || 0;
+  const remaining      = round2(orderedQty - alreadyShipped);
+  if (remaining <= 0) return sendError(res, 'This order is already fully dispatched.', 409);
+
+  // Default to the full remaining quantity if none provided.
+  let packQty = req.body.pack_qty === undefined || req.body.pack_qty === '' ? remaining : Number(req.body.pack_qty);
+  if (!(packQty > 0)) return sendError(res, 'pack_qty must be greater than zero.', 400);
+  if (packQty > remaining) return sendError(res, `pack_qty cannot exceed the remaining quantity (${remaining}).`, 400);
+  packQty = round2(packQty);
+
+  const rate       = Number(order.rate) || 0;
+  const gstPercent = Number(order.gst_percent) || 0;
+  const amount     = round2(packQty * rate);
+  const gstAmount  = round2(amount * gstPercent / 100);
+  const total      = round2(amount + gstAmount);
+
+  const packNo = (order.packages?.length || 0) + 1;
+
+  // The admin/seller company that is issuing this invoice.
+  const sellerCompany = await Company.findById(req.user.company_id).select('name mobile email').lean().catch(() => null);
+
+  // Resolve the retailer (buyer) authoritatively from the order's buyer ids,
+  // so the invoice never mislabels the admin as the retailer.
+  let retailer = {
+    name: order.created_by_person || '',
+    company: order.created_by_company || '',
+    mobile: order.created_by_mobile || '',
+    email: order.created_by_email || '',
+  };
+  if (order.buyer_company_id) {
+    const [buyerCompany, buyerUser] = await Promise.all([
+      Company.findById(order.buyer_company_id).select('name mobile email').lean().catch(() => null),
+      order.buyer_user_id ? User.findById(order.buyer_user_id).select('name mobile email').lean().catch(() => null) : null,
+    ]);
+    if (buyerCompany || buyerUser) {
+      retailer = {
+        name: buyerUser?.name || retailer.name || buyerCompany?.name || '',
+        company: buyerCompany?.name || retailer.company || '',
+        mobile: buyerUser?.mobile || buyerCompany?.mobile || retailer.mobile || '',
+        email: buyerUser?.email || buyerCompany?.email || retailer.email || '',
+      };
+    }
+  }
+
+  // 1) Invoice for just this packed quantity
+  const invoice_no = await nextInvoiceNo(req.user.company_id);
+  const invoice = await Invoice.create({
+    company_id:     req.user.company_id,
+    invoice_no,
+    order_id:       order._id,
+    order_no:       order.order_code || '',
+    customer_id:    order.customer_id || null,
+    customer_name:  order.customer_name || '',
+    customer_phone: order.customer_mobile || '',
+    customer_email: order.customer_email || '',
+    billing_address:  order.delivery_address || order.location || '',
+    shipping_address: order.delivery_address || order.location || '',
+    invoice_date:   new Date(),
+    items: [{
+      product_id:   order.product_id || null,
+      product_name: order.product_name || '',
+      product_code: order.product_code || '',
+      unit:         order.unit || 'Box',
+      gst_percent:  gstPercent,
+      qty:          packQty,
+      rate,
+      taxable_amount: amount,
+      gst_amount:   gstAmount,
+      total,
+    }],
+    subtotal:    amount,
+    gst_amount:  gstAmount,
+    grand_total: total,
+    balance_due: total,
+    payment_status: 'Unpaid',
+    status:      'sent',
+    // The Admin/seller who actually generated this invoice.
+    created_by_name:    req.user?.name || '',
+    created_by_person:  req.user?.name || '',
+    created_by_company: sellerCompany?.name || '',
+    created_by_mobile:  req.user?.mobile || sellerCompany?.mobile || '',
+    created_by_email:   req.user?.email || sellerCompany?.email || '',
+    created_by_type:    req.user?.role || 'Admin',
+    // The retailer this order was routed through (shown after Customer).
+    retailer_name:    retailer.name || '',
+    retailer_company: retailer.company || '',
+    retailer_mobile:  retailer.mobile || '',
+    retailer_email:   retailer.email || '',
+    remarks:     `Pack ${packNo} of order ${order.order_code} — ${packQty} ${order.unit || ''}`.trim(),
+    created_by:  req.user._id,
+  });
+
+  // 2) Dispatch for this packed quantity
+  const dispatch_code = await nextDispatchCode();
+  let expected_delivery = req.body.expected_delivery || null;
+  if (!expected_delivery && req.body.expected_delivery_days && req.body.dispatch_date) {
+    const d = new Date(req.body.dispatch_date);
+    d.setDate(d.getDate() + parseInt(req.body.expected_delivery_days, 10));
+    expected_delivery = d;
+  }
+  const dispatch = await Dispatch.create({
+    dispatch_code,
+    company_id:       req.user.company_id,
+    order_id:         order._id,
+    enquiry_code:     order.enquiry_code || '',
+    invoice_number:   invoice_no,
+    invoice_id:       invoice._id,
+    qty:              packQty,
+    unit:             order.unit || '',
+    customer_name:    order.customer_name || '',
+    branch_name:      req.body.branch_name || order.branch_name || '',
+    delivery_address: order.delivery_address || order.location || '',
+    vehicle_number:   req.body.vehicle_number || '',
+    driver_name:      req.body.driver_name || '',
+    driver_mobile:    req.body.driver_mobile || '',
+    transport_name:   req.body.transport_name || '',
+    lr_number:        req.body.lr_number || '',
+    dispatch_date:    req.body.dispatch_date || new Date(),
+    expected_delivery_days: req.body.expected_delivery_days ? parseInt(req.body.expected_delivery_days, 10) : null,
+    expected_delivery,
+    status:     'Dispatched',
+    created_by: req.user._id,
+  });
+
+  // 3) Update order counters + append package record + advance status
+  const newDispatched = round2(alreadyShipped + packQty);
+  const isFull = newDispatched >= orderedQty;
+  const newStatus = isFull ? 'Dispatched' : 'Partially Dispatched';
+
+  order.packed_qty     = round2((Number(order.packed_qty) || 0) + packQty);
+  order.dispatched_qty = newDispatched;
+  order.status         = newStatus;
+  order.dispatch_id    = dispatch._id;        // latest dispatch
+  order.invoice_number = invoice_no;          // latest invoice
+  order.invoice_date   = new Date();
+  order.packages.push({
+    pack_no:        packNo,
+    qty:            packQty,
+    amount, gst_amount: gstAmount, total,
+    invoice_id:     invoice._id,
+    invoice_number: invoice_no,
+    dispatch_id:    dispatch._id,
+    dispatch_code,
+    vehicle_number: dispatch.vehicle_number,
+    transport_name: dispatch.transport_name,
+    lr_number:      dispatch.lr_number,
+    packed_by:      req.user._id,
+    packed_by_name: req.user.name || '',
+    packed_at:      new Date(),
+  });
+  order.status_history.push({
+    status: newStatus,
+    updated_by: req.user._id,
+    updated_by_name: req.user.name || '',
+    updated_by_role: req.user.role || '',
+    remarks: `Packed ${packQty} ${order.unit || ''} (pack ${packNo}) — invoice ${invoice_no}, dispatch ${dispatch_code}. Remaining ${round2(orderedQty - newDispatched)}.`.trim(),
+    timestamp: new Date(),
+  });
+  await order.save();
+
+  // 4) Notify buyer (retailer) if marketplace order
+  if (order.buyer_company_id && order.buyer_user_id) {
+    await Notification.create({
+      company_id: order.buyer_company_id,
+      user_id: order.buyer_user_id,
+      type: 'order_status',
+      title: `Order ${order.order_code} — ${packQty} ${order.unit || ''} dispatched`,
+      message: isFull
+        ? `Your full order has been dispatched. Invoice ${invoice_no}.`
+        : `${packQty} ${order.unit || ''} dispatched (${round2(orderedQty - newDispatched)} remaining). Invoice ${invoice_no}.`,
+      reference_id: order._id,
+    }).catch(() => {});
+    notifyRetailer(order.buyer_user_id, {
+      title: `Order ${order.order_code} Dispatched`,
+      body: isFull
+        ? `Your full order was dispatched. LR: ${dispatch.lr_number || '—'}`
+        : `${packQty} ${order.unit || ''} dispatched, ${round2(orderedQty - newDispatched)} remaining.`,
+      type: 'dispatch',
+      referenceId: order._id,
+    });
+  }
+
+  await Notification.create({
+    company_id: req.user.company_id,
+    type: 'dispatch',
+    title: `Pack ${packNo} dispatched — ${order.order_code}`,
+    message: `${packQty} ${order.unit || ''} packed & dispatched. Invoice ${invoice_no}, ${dispatch_code}.`,
+    reference_id: order._id,
+  }).catch(() => {});
+
+  const populated = await Order.findById(order._id).populate('dispatch_id').lean();
+  sendSuccess(res, { order: populated, invoice, dispatch }, isFull ? 'Order fully packed & dispatched.' : 'Partial pack dispatched.', 201);
+}
+
 module.exports = {
   listOrders, getTransitions, getOrder, getNextStatuses,
   createOrderFromEnquiry, createOrder,
-  updateOrderStatus, updateOrder, deleteOrder,
+  updateOrderStatus, updateOrder, deleteOrder, packOrder,
 };
