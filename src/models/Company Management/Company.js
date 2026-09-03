@@ -52,6 +52,11 @@ const companySchema = new mongoose.Schema(
     doc_reg_url:      { type: String, default: '' },   // Business Registration
     doc_trade_url:    { type: String, default: '' },   // Trade License
     logo_url:         { type: String, default: '' },   // Company Logo
+
+    // ── Approval audit fields ──────────────────────────
+    approved_at:      { type: Date,   default: null },
+    approved_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    rejected_at:      { type: Date,   default: null },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 )

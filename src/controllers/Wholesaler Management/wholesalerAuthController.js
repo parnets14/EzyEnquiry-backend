@@ -9,6 +9,7 @@
  *  POST /register          — register company + owner (step 1)
  *  POST /upload-docs       — upload KYC docs (step 2)
  *  GET  /me                — get logged-in user profile
+ *  GET  /approval-status   — lightweight status check (no heavy join)
  *  POST /fcm-token         — save FCM push token
  *  POST /logout            — invalidate FCM token / logout
  */
@@ -245,8 +246,8 @@ async function register(req, res) {
     gstNumber, panNumber, address, city, state, pincode,
   } = req.body
 
-  // Required field validation
-  const required = { companyName, ownerName, mobile, email, businessType, password }
+  // Required field validation (password is optional — this app uses OTP login)
+  const required = { companyName, ownerName, mobile, email, businessType }
   for (const [field, val] of Object.entries(required)) {
     if (!val || String(val).trim() === '') {
       return sendError(res, `${field} is required.`, 400)
@@ -262,7 +263,8 @@ async function register(req, res) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
     return sendError(res, 'Please provide a valid email address.', 400)
   }
-  if (String(password).length < 6) {
+  // Password is optional; only validate length if one was provided.
+  if (password && String(password).length < 6) {
     return sendError(res, 'Password must be at least 6 characters.', 400)
   }
 
@@ -294,17 +296,20 @@ async function register(req, res) {
     status:      'Pending',
   })
 
-  // Create Company Owner user with a hashed password for sign-in
-  const password_hash = await bcrypt.hash(String(password), 12)
-  const user = await User.create({
+  // Create Company Owner user. Password is optional (OTP login by default);
+  // only hash & store a password if the user actually provided one.
+  const userData = {
     company_id: company._id,
     name:       String(ownerName).trim(),
     email:      cleanEmail,
     mobile:     cleanMobile,
     role:       'Company Owner',
-    password_hash,
     is_active:  true,
-  })
+  }
+  if (password) {
+    userData.password_hash = await bcrypt.hash(String(password), 12)
+  }
+  const user = await User.create(userData)
 
   sendSuccess(
     res,
@@ -418,6 +423,41 @@ async function logout(req, res) {
   sendSuccess(res, null, 'Logged out successfully.')
 }
 
+/**
+ * GET /api/wholesaler/auth/approval-status
+ * Protected — lightweight status check, avoids full /me join.
+ * Returns only the fields the app needs to decide which screen to show.
+ *
+ * Response:
+ *   { status: 'Pending'|'Approved'|'Rejected', ownerName, companyId, companyName }
+ */
+async function approvalStatus(req, res) {
+  const user = await User.findById(req.user._id)
+    .select('name company_id')
+    .lean()
+
+  if (!user) return sendError(res, 'User not found.', 404)
+
+  if (!user.company_id) {
+    return sendError(res, 'No company linked to this account.', 404)
+  }
+
+  const company = await Company.findById(user.company_id)
+    .select('name status owner_name approved_at reject_reason')
+    .lean()
+
+  if (!company) return sendError(res, 'Company not found.', 404)
+
+  sendSuccess(res, {
+    status:      company.status,           // 'Pending' | 'Approved' | 'Rejected'
+    ownerName:   user.name || company.owner_name || '',
+    companyId:   String(company._id),
+    companyName: company.name || '',
+    approvedAt:  company.approved_at || null,
+    rejectReason: company.reject_reason || '',
+  })
+}
+
 module.exports = {
   checkMobile,
   sendOtpHandler,
@@ -426,6 +466,7 @@ module.exports = {
   register,
   uploadDocs,
   me,
+  approvalStatus,
   saveFcmToken,
   logout,
 }

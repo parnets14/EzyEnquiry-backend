@@ -101,7 +101,11 @@ async function updateCompany(req, res) {
 
 /** PATCH /api/companies/:id/approve */
 async function approveCompany(req, res) {
-  const company = await Company.findById(req.params.id)
+  const company = await Company.findByIdAndUpdate(
+    req.params.id,
+    { status: 'Approved', reviewed_by: req.user._id },
+    { new: true }
+  ).lean()
   if (!company) return sendError(res, 'Company not found.', 404)
 
   company.status = 'Approved'
@@ -121,14 +125,16 @@ async function approveCompany(req, res) {
   // Find the company owner to send notification
   const owner = await User.findOne({ company_id: company._id, role: { $in: ['Company Owner', 'Retailer'] } }).lean()
 
-  // Create in-app notification for the company owner
   if (owner) {
+    const ownerName = owner.name || company.owner_name || 'Wholesaler'
+
+    // Create in-app notification for the company owner
     await Notification.create({
       company_id:   company._id,
       user_id:      owner._id,
       type:         'approval',
-      title:        '🎉 Account Approved!',
-      message:      `Congratulations! Your company "${company.name}" has been approved by admin. You can now access all features of EzyEnquiry.`,
+      title:        'Registration Approved',
+      message:      `Congratulations ${ownerName}! Your wholesaler registration has been approved successfully.`,
       reference_id: company._id,
       is_read:      false,
     }).catch(() => {})  // non-fatal

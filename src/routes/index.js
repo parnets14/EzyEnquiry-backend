@@ -62,6 +62,7 @@ router.use('/reports/dashboard', requireCompany, moduleAccess(MODULES.DASHBOARD)
 router.use('/reports',           requireCompany, moduleAccess(MODULES.REPORTS),   require('./Reports Management/reportRoutes'));
 
 // ── System Management ─────────────────────────────────────────
+<<<<<<< HEAD
 router.use('/notifications', requireCompany, moduleAccess(MODULES.NOTIFICATIONS), require('./System Management/notificationRoutes'));
 router.use('/documents',     requireCompany, moduleAccess(MODULES.DOCUMENTS),     require('./System Management/documentRoutes'));
 router.use('/subscriptions', requireCompany, moduleAccess(MODULES.SUBSCRIPTIONS), require('./System Management/subscriptionRoutes'));
@@ -70,5 +71,12 @@ router.use('/profile',       requireCompany, moduleAccess(MODULES.PROFILE),     
 // Role & Permission Management — admin config (guarded inside the route file).
 // '/me' is readable by any authenticated company user to drive their own menu.
 router.use('/role-permissions', requireCompany, require('./System Management/rolePermissionRoutes'));
+=======
+router.use('/notifications', requireCompany, require('./System Management/notificationRoutes'));
+router.use('/documents',     requireCompany, require('./System Management/documentRoutes'));
+router.use('/subscriptions', requireCompany, require('./System Management/subscriptionRoutes'));
+router.use('/profile',       requireCompany, require('./System Management/profileRoutes'));
+router.use('/audit-logs',    requireCompany, require('./System Management/auditLogRoutes'));
+>>>>>>> f721c98fc4022d59ec31611abff0af86a9a29b74
 
 module.exports = router;

@@ -52,6 +52,11 @@ const productSchema = new mongoose.Schema(
     wholesale_rate:   { type: Number, default: 0 },
     project_rate:     { type: Number, default: 0 },
     min_selling_rate: { type: Number, default: 0 },
+    // Discount % fields (off MRP)
+    retail_discount:    { type: Number, default: 0 },
+    dealer_discount:    { type: Number, default: 0 },
+    wholesale_discount: { type: Number, default: 0 },
+    project_discount:   { type: Number, default: 0 },
     min_stock_level:  { type: Number, default: 0 },
     reorder_level:    { type: Number, default: 0 },
 

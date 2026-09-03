@@ -45,6 +45,10 @@ function normaliseBody(body) {
     wholesale_rate:   num(body.wholesale_rate,    0),
     project_rate:     num(body.project_rate,      0),
     min_selling_rate: num(body.min_selling_rate,  0),
+    retail_discount:    num(body.retail_discount,    0),
+    dealer_discount:    num(body.dealer_discount,    0),
+    wholesale_discount: num(body.wholesale_discount, 0),
+    project_discount:   num(body.project_discount,   0),
     min_stock_level:  num(body.min_stock_level,   0),
     reorder_level:    num(body.reorder_level,     0),
     pcs_per_box:      body.pcs_per_box    ? num(body.pcs_per_box,    null) : null,
@@ -86,10 +90,14 @@ function nullifyIds(body) {
 
 /** GET /api/products */
 async function listProducts(req, res) {
-  const { page = 1, limit = 20, search, finish, material, sub_category, is_active } = req.query
+  const { page = 1, limit = 20, search, finish, material, sub_category, is_active, all_companies } = req.query
   const offset = (parseInt(page) - 1) * parseInt(limit)
 
-  const query = { company_id: req.user.company_id, status: { $ne: 'deleted' } }
+  // Super Admin may view products across ALL companies (incl. wholesaler-added)
+  // by passing ?all_companies=true. Everyone else is scoped to their company.
+  const seeAll = req.user.role === 'Super Admin' && String(all_companies) === 'true'
+  const query = { status: { $ne: 'deleted' } }
+  if (!seeAll) query.company_id = req.user.company_id
   if (search)       query.$or = [{ name: { $regex: search, $options: 'i' } }, { code: { $regex: search, $options: 'i' } }]
   if (finish)       query.finish          = finish
   if (material)     query.material        = material

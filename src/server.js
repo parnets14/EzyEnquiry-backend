@@ -24,6 +24,7 @@ const { authenticate,
 const { requireRetailerIdentity,
         requireApprovedSeller,
         denyRetailerErpAccess } = require('./middleware/retailerAccess')
+const { auditLogger }        = require('./middleware/auditLogger')
 
 // ── Routes ───────────────────────────────────────────────────
 const authRoutes         = require('./routes/authRoutes')
@@ -62,8 +63,7 @@ const profileRoutes      = require('./routes/System Management/profileRoutes')
 const rolePermissionRoutes = require('./routes/System Management/rolePermissionRoutes')
 const quotationRoutes    = require('./routes/Finance Management/quotationRoutes')
 const invoiceRoutes      = require('./routes/Finance Management/invoiceRoutes')
-const wholesalerAuthRoutes    = require('./routes/Wholesaler Management/wholesalerAuthRoutes')
-const wholesalerCatalogRoutes = require('./routes/Wholesaler Management/wholesalerCatalogRoutes')
+const wholesalerAuthRoutes = require('./routes/Wholesaler Management/wholesalerAuthRoutes')
 const retailerAuthRoutes   = require('./routes/Retailer Management/retailerAuthRoutes')
 const retailerRoutes       = require('./routes/Retailer Management/retailerRoutes')
 const staffAuthRoutes      = require('./routes/Staff App Management/staffAuthRoutes')
@@ -75,6 +75,12 @@ const PORT = process.env.PORT || 5000
 // ── Security & Utility Middleware ────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }))
 app.use(compression())
+// In development: allow ALL origins so any phone/emulator on the LAN can connect.
+// In production: restrict to your actual frontend domain via FRONTEND_URL env var.
+const corsOrigin = process.env.NODE_ENV === 'production'
+  ? (process.env.FRONTEND_URL || 'https://your-domain.com')
+  : true // true = reflect any origin — safe for local dev
+
 app.use(cors({
   origin: [
     process.env.FRONTEND_URL || 'http://localhost:5173',
@@ -112,6 +118,12 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), service: 'EzyEnquiry API' })
 })
 
+// ── Public KYC document viewer (token-signed, no auth header) ─
+// The signed token in the query string is the authorization; must be
+// registered BEFORE the authenticated /api/companies block below.
+const { viewCompanyDocument } = require('./controllers/Company Management/companyDocumentController')
+app.get('/api/companies/documents/view', viewCompanyDocument)
+
 // ── Public Routes ─────────────────────────────────────────────
 app.use('/api/auth',              authRoutes)
 app.use('/api/auth/staff',        staffAuthRoutes)
@@ -131,9 +143,14 @@ const ERP_ROUTE_PREFIXES = [
   '/api/payments', '/api/accounts', '/api/profit-loss', '/api/quotations', '/api/invoices',
   '/api/employees', '/api/employee-master', '/api/attendance', '/api/salary',
   '/api/reports', '/api/notifications', '/api/documents', '/api/subscriptions', '/api/profile',
-  '/api/role-permissions',
 ]
-app.use(ERP_ROUTE_PREFIXES, authenticate, denyRetailerErpAccess)
+app.use(ERP_ROUTE_PREFIXES, authenticate, denyRetailerErpAccess, auditLogger)
+
+// ── Wholesaler Protected Routes ───────────────────────────────
+app.use('/api/wholesaler/products',   authenticate, wholesalerProductRoutes)
+app.use('/api/wholesaler/inventory',  authenticate, wholesalerInventoryRoutes)
+app.use('/api/wholesaler/warehouses', authenticate, require('./routes/Wholesaler Management/wholesalerWarehouseRoutes'))
+app.use('/api/wholesaler/purchases',  authenticate, require('./routes/Wholesaler Management/wholesalerPurchaseRoutes'))
 
 // ── Protected Routes ──────────────────────────────────────────
 app.use('/api/companies',     authenticate, moduleAccess(MODULES.COMPANY), companyRoutes)
@@ -186,7 +203,6 @@ app.use('/api/notifications', authenticate, requireCompany, moduleAccess(MODULES
 app.use('/api/documents',     authenticate, requireCompany, moduleAccess(MODULES.DOCUMENTS), documentRoutes)
 app.use('/api/subscriptions', authenticate, requireCompany, moduleAccess(MODULES.SUBSCRIPTIONS), subscriptionRoutes)
 app.use('/api/profile',       authenticate, profileRoutes)
-app.use('/api/role-permissions', authenticate, requireCompany, rolePermissionRoutes)
 
 // ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {
@@ -201,8 +217,8 @@ connectDB().then(async () => {
   await seedSuperAdmin()
   await healOrphanUsers()
 
-  app.listen(PORT, () => {
-    console.log(`✓ Server running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`)
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✓ Server running on http://0.0.0.0:${PORT} [${process.env.NODE_ENV || 'development'}]`)
   })
 })
 
