@@ -86,6 +86,7 @@ async function createProduct(req, res) {
     mrp:            num(b.mrp),
 
     product_type: b.product_type || 'Regular Product',
+    source:       'wholesaler',   // tag: added from the wholesaler app
     image_urls:   Array.isArray(b.image_urls) ? b.image_urls : [],
     is_active:    true,
     status:       'active',
@@ -124,13 +125,20 @@ async function getFilters(req, res) {
 async function listCatalog(req, res) {
   const {
     page = 1, limit = 20,
-    search, size, finish, material, color, category, brand,
+    search, size, finish, material, color, category, brand, catalog_only,
   } = req.query
 
   const offset = (parseInt(page) - 1) * parseInt(limit)
 
   // All active products — no company_id filter (admin products visible to all)
   const query = { is_active: true, status: { $ne: 'deleted' } }
+  // catalog_only=true → only ADMIN catalog products (exclude wholesaler-added items)
+  if (String(catalog_only) === 'true') query.source = { $ne: 'wholesaler' }
+  // mine=true → only THIS wholesaler's own products (source=wholesaler + own company)
+  if (String(req.query.mine) === 'true') {
+    query.source = 'wholesaler'
+    if (req.user.company_id) query.company_id = req.user.company_id
+  }
 
   if (search) {
     query.$or = [
@@ -233,4 +241,50 @@ async function deleteProduct(req, res) {
   sendSuccess(res, { deleted: true }, 'Product deleted.')
 }
 
-module.exports = { listCatalog, getCatalogProduct, getFilters, createProduct, listMyProducts, deleteProduct }
+// ─────────────────────────────────────────────────────────────────────────────
+// ADMIN (Super Admin): GET /api/wholesaler/all-products/:id
+// View a single wholesaler-added product from ANY company.
+// ─────────────────────────────────────────────────────────────────────────────
+async function getAdminProduct(req, res) {
+  if (req.user.role !== 'Super Admin') return sendError(res, 'Access denied. Super Admin only.', 403)
+
+  const product = await Product.findById(req.params.id)
+    .populate('brand_id',        'name')
+    .populate('category_id',     'name')
+    .populate('sub_category_id', 'name')
+    .populate('company_id',      'name company_code')
+    .lean()
+
+  if (!product || product.status === 'deleted') return sendError(res, 'Product not found.', 404)
+
+  sendSuccess(res, {
+    ...product,
+    company_name: product.company_id?.name || '—',
+    company_code: product.company_id?.company_code || '',
+  })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADMIN (Super Admin): DELETE /api/wholesaler/all-products/:id
+// Soft-delete a wholesaler-added product from ANY company.
+// ─────────────────────────────────────────────────────────────────────────────
+async function deleteAdminProduct(req, res) {
+  if (req.user.role !== 'Super Admin') return sendError(res, 'Access denied. Super Admin only.', 403)
+
+  const product = await Product.findById(req.params.id).lean()
+  if (!product) return sendError(res, 'Product not found.', 404)
+
+  await Product.findByIdAndUpdate(req.params.id, {
+    status:     'deleted',
+    is_active:  false,
+    deleted_at: new Date(),
+    deleted_by: req.user._id,
+  })
+
+  sendSuccess(res, { deleted: true }, 'Product deleted.')
+}
+
+module.exports = {
+  listCatalog, getCatalogProduct, getFilters, createProduct, listMyProducts, deleteProduct,
+  getAdminProduct, deleteAdminProduct,
+}

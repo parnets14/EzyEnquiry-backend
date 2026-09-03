@@ -65,6 +65,7 @@ const productSchema = new mongoose.Schema(
     status:       { type: String, enum: ['active', 'deleted'], default: 'active' },
     sales_type:   { type: String, default: 'Regular Sale' },
     product_type: { type: String, default: 'Regular Product' },
+    source:       { type: String, default: 'admin' },   // 'admin' | 'wholesaler'
 
     // Visibility flags
     new_arrival:    { type: Boolean, default: false },

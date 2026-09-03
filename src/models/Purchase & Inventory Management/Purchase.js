@@ -28,6 +28,9 @@ const purchaseSchema = new mongoose.Schema(
       default: 'Pending',
     },
     stock_in_done:   { type: Boolean, default: false },
+    // Links set when an admin approves a wholesaler purchase-order → Order + Invoice
+    order_id:        { type: mongoose.Schema.Types.ObjectId, ref: 'Order',   default: null },
+    invoice_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', default: null },
     notes:           { type: String, default: '' },
     created_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   },
