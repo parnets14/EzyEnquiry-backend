@@ -61,6 +61,8 @@ const invoiceSchema = new mongoose.Schema(
     sale_code:        { type: String, default: '' },
     order_id:         { type: mongoose.Schema.Types.ObjectId, ref: 'Order',     default: null },
     order_no:         { type: String, default: '' },
+    dispatch_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Dispatch',  default: null },
+    dispatch_code:    { type: String, default: '' },
 
     // ── Customer Info ──────────────────────────────────────
     customer_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Customer',  default: null },
@@ -130,5 +132,7 @@ invoiceSchema.index({ company_id: 1, status: 1 });
 invoiceSchema.index({ company_id: 1, invoice_no: 1 });
 invoiceSchema.index({ company_id: 1, payment_status: 1 });
 invoiceSchema.index({ company_id: 1, customer_id: 1 });
+invoiceSchema.index({ company_id: 1, dispatch_id: 1 });
+invoiceSchema.index({ company_id: 1, order_id: 1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

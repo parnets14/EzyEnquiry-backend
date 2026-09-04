@@ -214,6 +214,7 @@ app.use('/api/notifications', authenticate, requireCompany, moduleAccess(MODULES
 app.use('/api/documents',     authenticate, requireCompany, moduleAccess(MODULES.DOCUMENTS), documentRoutes)
 app.use('/api/subscriptions', authenticate, requireCompany, moduleAccess(MODULES.SUBSCRIPTIONS), subscriptionRoutes)
 app.use('/api/profile',       authenticate, moduleAccess(MODULES.PROFILE), profileRoutes)
+app.use('/api/role-permissions', authenticate, requireCompany, rolePermissionRoutes)
 
 // ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {

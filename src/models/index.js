@@ -25,6 +25,8 @@ const Receivable    = require('./Finance Management/Receivable')
 const Payable       = require('./Finance Management/Payable')
 const Transaction   = require('./Finance Management/Transaction')
 const Quotation     = require('./Finance Management/Quotation')
+const Department    = require('./HR Management/Department')
+const Designation   = require('./HR Management/Designation')
 const Employee      = require('./HR Management/Employee')
 const Attendance    = require('./HR Management/Attendance')
 const SalaryRecord  = require('./HR Management/SalaryRecord')
@@ -59,6 +61,8 @@ module.exports = {
   Payable,
   Transaction,
   Quotation,
+  Department,
+  Designation,
   Employee,
   Attendance,
   SalaryRecord,

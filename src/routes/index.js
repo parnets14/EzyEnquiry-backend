@@ -58,9 +58,12 @@ router.use('/accounts',    requireCompany, moduleAccess(MODULES.ACCOUNTS),    re
 router.use('/profit-loss', requireCompany, moduleAccess(MODULES.PROFIT_LOSS), require('./Finance Management/profitLossRoutes'));
 
 // ── HR Management ─────────────────────────────────────────────
-router.use('/employees',  requireCompany, moduleAccess(MODULES.EMPLOYEES),  require('./HR Management/employeeRoutes'));
-router.use('/attendance', requireCompany, moduleAccess(MODULES.ATTENDANCE), require('./HR Management/attendanceRoutes'));
-router.use('/salary',     requireCompany, moduleAccess(MODULES.SALARY),     require('./HR Management/salaryRoutes'));
+// Employee Master (Departments / Designations) — its own module gate.
+router.use('/employee-master', requireCompany, moduleAccess(MODULES.EMPLOYEE_MASTER), require('./HR Management/employeeMasterRoutes'));
+// The /employees mount also hosts /attendance and /salary sub-routes. Per-feature
+// module gates (EMPLOYEES / ATTENDANCE / SALARY) are applied inside the router,
+// so only company scope is enforced at this level.
+router.use('/employees', requireCompany, require('./HR Management/employeeRoutes'));
 
 // ── Reports Management ────────────────────────────────────────
 router.use('/reports/dashboard', requireCompany, moduleAccess(MODULES.DASHBOARD), require('./Reports Management/dashboardRoutes'));
