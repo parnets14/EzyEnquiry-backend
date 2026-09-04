@@ -174,6 +174,7 @@ function transitionAction(moduleKey, req) {
   const method = req.method
   const status = String(req.body?.status || '').toLowerCase()
 
+  if (moduleKey === 'profile' && /\/change-password$/.test(path)) return 'change_password'
   if (moduleKey === 'company') {
     if (/\/documents\//.test(path) && method === 'GET') return 'view_document'
     if (/\/approve$/.test(path)) return 'approve'

@@ -379,14 +379,31 @@ async function getEnquiryProduct(id) {
 }
 
 async function dashboard(req, res) {
-  const [enquiries, orders, unread, recentOrders] = await Promise.all([
+  const orderScope = buyerOrderQuery(req)
+  const invoiceOrderIds = await Order.find(orderScope).select('_id').lean().then(list => list.map(o => o._id))
+  const [enquiries, orders, delivered, inProgress, unread, recentOrders, invoiceAgg] = await Promise.all([
     Enquiry.countDocuments(buyerEnquiryQuery(req)),
-    Order.countDocuments(buyerOrderQuery(req)),
+    Order.countDocuments(orderScope),
+    Order.countDocuments({ ...orderScope, status: 'Delivered' }),
+    Order.countDocuments({ ...orderScope, status: { $in: ['New', 'Pending Approval', 'Approved', 'Picking Started', 'Picking Completed', 'Sorting Started', 'Sorting Completed', 'Packing Started', 'Packing Completed', 'Invoice Generated', 'Ready for Dispatch', 'Partially Dispatched', 'Dispatched', 'In Transit'] } }),
     Notification.countDocuments({ company_id: req.user.company_id, user_id: req.user._id, is_read: false }),
-    Order.find(buyerOrderQuery(req)).select('-purchase_rate -purchase_cost -warehouse_status').populate('seller_company_id', 'name city state').populate('product_id', 'code name image_urls').sort({ created_at: -1 }).limit(5).lean(),
+    Order.find(orderScope).select('-purchase_rate -purchase_cost -warehouse_status').populate('seller_company_id', 'name city state').populate('product_id', 'code name image_urls').sort({ created_at: -1 }).limit(5).lean(),
+    invoiceOrderIds.length
+      ? Invoice.aggregate([
+          { $match: { order_id: { $in: invoiceOrderIds } } },
+          { $group: { _id: null, count: { $sum: 1 }, dueCount: { $sum: { $cond: [{ $gt: ['$balance_due', 0] }, 1, 0] } }, dueAmount: { $sum: '$balance_due' } } },
+        ]).catch(() => [])
+      : [],
   ])
+  const inv = (invoiceAgg && invoiceAgg[0]) || { count: 0, dueCount: 0, dueAmount: 0 }
   return ok(res, {
-    counts: { enquiries, orders, unread_notifications: unread },
+    counts: {
+      enquiries, orders, delivered, in_progress: inProgress,
+      unread_notifications: unread,
+      invoices: inv.count || 0,
+      pending_payments: inv.dueCount || 0,
+      pending_amount: inv.dueAmount || 0,
+    },
     recent_orders: recentOrders.map(orderResponse),
     company_status: req.company.status,
   })

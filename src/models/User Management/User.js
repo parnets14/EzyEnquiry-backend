@@ -12,8 +12,11 @@ const userSchema = new mongoose.Schema(
       enum: ['Super Admin', 'Company Owner', 'Manager', 'Accountant', 'Sales Executive', 'Warehouse Staff', 'Retailer', 'Wholesaler'],
       default: 'Sales Executive',
     },
-    is_active:  { type: Boolean, default: true },
-    last_login: { type: Date, default: null },
+    is_active:          { type: Boolean, default: true },
+    last_login:         { type: Date, default: null },
+    email_verified_at:  { type: Date, default: null },
+    mobile_verified_at: { type: Date, default: null },
+    password_changed_at: { type: Date, default: null },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 )

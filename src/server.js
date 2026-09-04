@@ -70,6 +70,7 @@ const wholesalerInventoryRoutes = require('./routes/Wholesaler Management/wholes
 const retailerAuthRoutes   = require('./routes/Retailer Management/retailerAuthRoutes')
 const retailerRoutes       = require('./routes/Retailer Management/retailerRoutes')
 const staffAuthRoutes      = require('./routes/Staff App Management/staffAuthRoutes')
+const staffDataRoutes      = require('./routes/Staff App Management/staffDataRoutes')
 
 // ────────────────────────────────────────────────────────────
 const app  = express()
@@ -130,6 +131,8 @@ app.get('/api/companies/documents/view', viewCompanyDocument)
 // ── Public Routes ─────────────────────────────────────────────
 app.use('/api/auth',              authRoutes)
 app.use('/api/auth/staff',        staffAuthRoutes)
+// Staff App data (company-scoped Sales Orders + Invoices + record payment).
+app.use('/api/staff',             authenticate, requireCompany, staffDataRoutes)
 app.use('/api/wholesaler/auth',   wholesalerAuthRoutes)
 app.use('/api/wholesaler',        authenticate, requireApprovedSeller, wholesalerCatalogRoutes)
 app.use('/api/retailer/auth',     retailerAuthRoutes)
@@ -210,7 +213,7 @@ app.use('/api/reports',           authenticate, requireCompany, moduleAccess(MOD
 app.use('/api/notifications', authenticate, requireCompany, moduleAccess(MODULES.NOTIFICATIONS), notificationRoutes)
 app.use('/api/documents',     authenticate, requireCompany, moduleAccess(MODULES.DOCUMENTS), documentRoutes)
 app.use('/api/subscriptions', authenticate, requireCompany, moduleAccess(MODULES.SUBSCRIPTIONS), subscriptionRoutes)
-app.use('/api/profile',       authenticate, profileRoutes)
+app.use('/api/profile',       authenticate, moduleAccess(MODULES.PROFILE), profileRoutes)
 
 // ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {
