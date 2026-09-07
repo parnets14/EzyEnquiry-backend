@@ -118,6 +118,7 @@ async function listProducts(req, res) {
       .lean(),
   ])
 
+  console.log(`[Products] company_id=${query.company_id} total=${total} returning=${products.length} limit=${limit}`)
   sendSuccess(res, { products, pagination: paginate(total, parseInt(page), parseInt(limit)) })
 }
 

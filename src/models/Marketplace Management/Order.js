@@ -93,6 +93,11 @@ const orderSchema = new mongoose.Schema(
     created_by_mobile:  { type: String, default: '' },
     created_by_email:   { type: String, default: '' },
     created_by_type:    { type: String, default: '' }, // Admin | Wholesaler | Retailer App | Staff App
+    // Order assignment
+    assigned_to:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    assigned_to_name: { type: String, default: '' },
+    assigned_date:    { type: Date, default: null },
+    assignment_type:  { type: String, enum: ['AUTO', 'MANUAL', 'CLAIMED'], default: null },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

@@ -39,21 +39,40 @@ const VALID_TRANSITIONS = {
 
 const ORDER_MANAGERS = ['Wholesaler', 'Manager', 'Company Owner', 'Super Admin', 'Sales Executive', 'Warehouse Staff', 'Accountant'];
 
-/** GET /api/orders */
+/** GET /api/orders  AND  GET /api/staff/orders */
 async function listOrders(req, res) {
   const { status, search, page = 1, limit = 100 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const query = { company_id: req.user.company_id };
+
+  // When called from the Staff App (/api/staff/orders), only return
+  // orders that are explicitly assigned to the logged-in staff user.
+  if (req.isStaffApp) {
+    query.assigned_to = req.user._id;
+  }
+
   if (status && status !== 'All') query.status = status;
+
   if (search) {
-    query.$or = [
+    const searchOr = [
       { customer_name: { $regex: search, $options: 'i' } },
       { order_code:    { $regex: search, $options: 'i' } },
       { product_name:  { $regex: search, $options: 'i' } },
       { enquiry_code:  { $regex: search, $options: 'i' } },
       { branch_name:   { $regex: search, $options: 'i' } },
     ];
+    // If we already have an assigned_to filter, wrap both in $and so
+    // the staff restriction is not dropped when search is applied.
+    if (query.assigned_to) {
+      query.$and = [
+        { assigned_to: query.assigned_to },
+        { $or: searchOr },
+      ];
+      delete query.assigned_to;
+    } else {
+      query.$or = searchOr;
+    }
   }
 
   const [total, orders] = await Promise.all([
@@ -599,4 +618,85 @@ module.exports = {
   listOrders, getTransitions, getOrder, getNextStatuses,
   createOrderFromEnquiry, createOrder,
   updateOrderStatus, updateOrder, deleteOrder, packOrder,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/orders/:id/assign - Assign order to staff
+// ─────────────────────────────────────────────────────────────────────────────
+async function assignOrder(req, res) {
+  const { staff_id } = req.body;
+
+  if (!staff_id) {
+    return sendError(res, 'staff_id is required.');
+  }
+
+  // Find the user by _id within the same company.
+  // Do NOT filter by role — staff users are created with role 'Sales Executive'.
+  const staffUser = await User.findOne({
+    _id:        staff_id,
+    company_id: req.user.company_id,
+    is_active:  true,
+  }).select('name role').lean();
+
+  if (!staffUser) {
+    return sendError(res, 'User not found or does not belong to this company.', 404);
+  }
+
+  const order = await Order.findOneAndUpdate(
+    { _id: req.params.id, company_id: req.user.company_id },
+    {
+      assigned_to:      staff_id,
+      assigned_to_name: staffUser.name,
+      assigned_date:    new Date(),
+      assignment_type:  'MANUAL',
+    },
+    { new: true },
+  ).lean();
+
+  if (!order) {
+    return sendError(res, 'Order not found.', 404);
+  }
+
+  // Notify the assigned staff member.
+  await Notification.create({
+    company_id:   req.user.company_id,
+    user_id:      staff_id,
+    type:         'order',
+    title:        `Order ${order.order_code} Assigned`,
+    message:      `You have been assigned to order ${order.order_code} for ${order.customer_name}`,
+    reference_id: order._id,
+  }).catch(() => {});
+
+  sendSuccess(res, order, `Order assigned to ${staffUser.name}`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/orders/:id/claim - Staff claims unassigned order (self-assignment)
+// ─────────────────────────────────────────────────────────────────────────────
+async function claimOrder(req, res) {
+  // Staff can only claim unassigned orders
+  const order = await Order.findOne({ 
+    _id: req.params.id, 
+    company_id: req.user.company_id,
+    assigned_to: null  // Must be unassigned
+  });
+
+  if (!order) {
+    return sendError(res, 'Order not found or already assigned.', 404);
+  }
+
+  order.assigned_to = req.user._id;
+  order.assigned_to_name = req.user.name;
+  order.assigned_date = new Date();
+  order.assignment_type = 'CLAIMED';
+  await order.save();
+
+  sendSuccess(res, order, `Order ${order.order_code} claimed successfully!`);
+}
+
+module.exports = {
+  listOrders, getTransitions, getOrder, getNextStatuses,
+  createOrderFromEnquiry, createOrder,
+  updateOrderStatus, updateOrder, deleteOrder, packOrder,
+  assignOrder, claimOrder,
 };

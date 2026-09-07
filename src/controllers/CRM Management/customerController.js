@@ -7,15 +7,42 @@ const mongoose   = require('mongoose');
 
 /** GET /api/customers */
 async function listCustomers(req, res) {
-  const { search, page = 1, limit = 20 } = req.query;
+  const { search, page = 1, limit = 20, scope } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const query = { company_id: req.user.company_id };
-  if (search) {
+
+  // Staff App: only show customers linked to assigned orders.
+  // Pass ?scope=all to bypass this (used by quotation form to show all customers).
+  if (req.isStaffApp && scope !== 'all') {
+    const assignedOrders = await Order.find(
+      { company_id: req.user.company_id, assigned_to: req.user._id },
+      { customer_name: 1, customer_mobile: 1 }
+    ).lean();
+
+    if (assignedOrders.length === 0) {
+      return sendSuccess(res, { customers: [], pagination: { total: 0, page: 1, limit: parseInt(limit) } });
+    }
+
+    const mobiles = [...new Set(assignedOrders.map(o => o.customer_mobile).filter(Boolean))];
+    const names   = [...new Set(assignedOrders.map(o => o.customer_name).filter(Boolean))];
     query.$or = [
+      ...(mobiles.length ? [{ mobile: { $in: mobiles } }] : []),
+      ...(names.length   ? [{ name:   { $in: names   } }] : []),
+    ];
+  }
+
+  if (search) {
+    const searchOr = [
       { name:   { $regex: search, $options: 'i' } },
       { mobile: { $regex: search, $options: 'i' } },
     ];
+    if (query.$or) {
+      query.$and = [{ $or: query.$or }, { $or: searchOr }];
+      delete query.$or;
+    } else {
+      query.$or = searchOr;
+    }
   }
 
   const [total, customers] = await Promise.all([
@@ -85,8 +112,8 @@ async function createCustomer(req, res) {
     biz_type:     req.body.biz_type     || 'Retailer',
     credit_limit: req.body.credit_limit || 0,
     created_by:      req.user._id || req.user.id || null,
-    created_by_name: req.user.name || '',
-    created_by_type: 'Admin',
+    created_by_name: req.body.created_by_name || req.user.name || '',
+    created_by_type: req.body.created_by_type || 'Admin',
   });
   sendSuccess(res, customer, 'Customer created.', 201);
 }

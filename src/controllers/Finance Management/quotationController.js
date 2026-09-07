@@ -182,15 +182,46 @@ async function listQuotations(req, res) {
   const { search, status, page = 1, limit = 200 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
-  const query = { company_id: req.user.company_id };
+  // Build query:
+  // Admin/Wholesaler CRM → show quotations where:
+  //   company_id = me  (I created it)  OR  seller_company_id = me  (staff sent to my product)
+  // Staff App → show quotations created by this staff user (company_id = staff's admin company
+  //   AND created_by = req.user._id OR created_by_type = 'Staff App')
+  let query;
+
+  if (req.isStaffApp) {
+    // Staff sees quotations THEY created
+    query = {
+      company_id:      req.user.company_id,
+      created_by:      req.user._id,
+      created_by_type: 'Staff App',
+    };
+  } else {
+    // Admin/Wholesaler/Retailer CRM sees:
+    // 1. Quotations belonging to their company
+    // 2. Quotations where their company is the seller (staff sent to their product)
+    query = {
+      $or: [
+        { company_id:        req.user.company_id },
+        { seller_company_id: req.user.company_id },
+      ],
+    };
+  }
+
   if (status) query.status = status;
   if (search) {
-    query.$or = [
+    const searchOr = [
       { quotation_no:   { $regex: search, $options: 'i' } },
       { customer_name:  { $regex: search, $options: 'i' } },
       { customer_phone: { $regex: search, $options: 'i' } },
       { enquiry_no:     { $regex: search, $options: 'i' } },
     ];
+    if (query.$or) {
+      query.$and = [{ $or: query.$or }, { $or: searchOr }];
+      delete query.$or;
+    } else {
+      query.$or = searchOr;
+    }
   }
 
   const [total, quotations] = await Promise.all([
@@ -225,27 +256,72 @@ async function createQuotation(req, res) {
     quotation_no = `QT-${String(num + 1).padStart(4, '0')}`;
   }
 
+  // If the quotation is for a product owned by a different company (e.g. a
+  // wholesaler's product), record that company as seller_company_id so the
+  // quotation appears in their CRM as well as the staff's admin company.
+  const sellerCompanyId = body.seller_company_id || null;
+
+  // Resolve product details for the first item if product_id provided
+  let resolvedItems = Array.isArray(body.items) ? body.items : [];
+  if (resolvedItems.length > 0 && resolvedItems[0].product_id) {
+    try {
+      const Product = require('../../models/Product Management/Product');
+      const prod = await Product.findById(resolvedItems[0].product_id)
+        .populate('brand_id', 'name')
+        .populate('category_id', 'name')
+        .populate('sub_category_id', 'name')
+        .lean();
+      if (prod) {
+        resolvedItems = resolvedItems.map((item, idx) => {
+          if (idx !== 0) return item;
+          return {
+            ...item,
+            product_code:      prod.code         || item.product_code || '',
+            product_name:      prod.name         || item.product_name || '',
+            brand_name:        prod.brand_id?.name    || item.brand_name    || '',
+            category_name:     prod.category_id?.name || item.category_name || '',
+            sub_category_name: prod.sub_category_id?.name || item.sub_category_name || '',
+            size:              prod.size    || item.size    || '',
+            finish:            prod.finish  || item.finish  || '',
+            color:             prod.color   || item.color   || '',
+            unit:              prod.unit    || item.unit    || 'Sq Ft',
+            gst_percent:       prod.gst_percent ?? item.gst_percent ?? 18,
+            mrp:               prod.mrp         || item.mrp         || 0,
+            retail_price:      prod.retail_price || item.retail_price || 0,
+            dealer_price:      prod.dealer_price || item.dealer_price || 0,
+            pcs_per_box:       prod.pcs_per_box  || item.pcs_per_box  || null,
+            sqft_per_box:      prod.sqft_per_box || item.sqft_per_box || null,
+          };
+        });
+      }
+    } catch (_) { /* product lookup is best-effort */ }
+  }
+
   const q = await Quotation.create({
-    company_id:      req.user.company_id,
+    company_id:        req.user.company_id,
+    seller_company_id: sellerCompanyId,
     quotation_no,
     enquiry_id:      body.enquiry_id      || null,
     enquiry_no:      body.enquiry_no      || '',
     delivery_no:     body.delivery_no     || '',
+    customer_id:     body.customer_id     || null,
     customer_name:   body.customer_name   || '',
     customer_phone:  body.customer_phone  || '',
     customer_email:  body.customer_email  || '',
     quotation_date:  body.quotation_date  || new Date(),
     valid_until:     body.valid_until     || null,
-    items:           Array.isArray(body.items) ? body.items : [],
+    items:           resolvedItems,
     freight_charges: parseFloat(body.freight_charges) || 0,
     other_charges:   parseFloat(body.other_charges)   || 0,
     subtotal:        parseFloat(body.subtotal)         || 0,
     gst_amount:      parseFloat(body.gst_amount)       || 0,
     grand_total:     parseFloat(body.grand_total)      || 0,
-    remarks:         body.remarks || '',
+    remarks:         body.remarks || body.notes || '',
     terms:           body.terms   || '',
     status:          'draft',
     created_by:      req.user._id,
+    created_by_name: body.created_by_name || req.user.name || '',
+    created_by_type: body.created_by_type || 'Admin',
   });
   sendSuccess(res, q, 'Quotation created.', 201);
 }

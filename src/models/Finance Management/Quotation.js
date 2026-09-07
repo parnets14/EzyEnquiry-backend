@@ -33,6 +33,9 @@ const quotationItemSchema = new mongoose.Schema(
 const quotationSchema = new mongoose.Schema(
   {
     company_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
+    // When a Staff App quotation is for a wholesaler/retailer product, this
+    // points to that product owner's company so the quotation appears in their CRM.
+    seller_company_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null },
     quotation_no:    { type: String, default: '' },
     // Retailer marketplace origin — set when a retailer sends an enquiry on an
     // Admin product. Lets an accepted quotation create a retailer-visible order.
@@ -43,6 +46,7 @@ const quotationSchema = new mongoose.Schema(
     enquiry_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', default: null },
     enquiry_no:      { type: String, default: '' },
     delivery_no:     { type: String, default: '' },
+    customer_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', default: null },
     customer_name:   { type: String, default: '' },
     customer_phone:  { type: String, default: '' },
     customer_email:  { type: String, default: '' },

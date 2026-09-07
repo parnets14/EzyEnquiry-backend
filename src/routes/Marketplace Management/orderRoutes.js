@@ -16,6 +16,8 @@ router.get   ('/:id/next-statuses', ctrl.getNextStatuses);
 router.get   ('/:id',               ctrl.getOrder);
 router.patch ('/:id/status',        ctrl.updateOrderStatus);
 router.post  ('/:id/pack',          authorize(...ORDER_MANAGERS), ctrl.packOrder);
+router.post  ('/:id/assign',        authorize('Manager', 'Company Owner', 'Super Admin'), ctrl.assignOrder);
+router.post  ('/:id/claim',         authorize('Staff'), ctrl.claimOrder);
 router.put   ('/:id',               ctrl.updateOrder);
 router.delete('/:id',               authorize('Manager', 'Company Owner', 'Super Admin'), ctrl.deleteOrder);
 

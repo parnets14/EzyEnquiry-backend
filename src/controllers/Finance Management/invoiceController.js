@@ -31,6 +31,22 @@ async function listInvoices(req, res) {
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const query = { company_id: req.user.company_id };
+
+  // Staff App: only show invoices linked to orders assigned to this staff user.
+  if (req.isStaffApp) {
+    const Order = require('../../models/Marketplace Management/Order');
+    const assignedOrders = await Order.find(
+      { company_id: req.user.company_id, assigned_to: req.user._id },
+      { order_code: 1 }
+    ).lean();
+    const assignedOrderCodes = assignedOrders.map(o => o.order_code).filter(Boolean);
+    // If staff has no assigned orders, return empty immediately.
+    if (assignedOrderCodes.length === 0) {
+      return sendSuccess(res, { invoices: [], total: 0, page: 1, limit: parseInt(limit) });
+    }
+    query.order_no = { $in: assignedOrderCodes };
+  }
+
   if (status)         query.status         = status;
   if (payment_status) query.payment_status = payment_status;
   if (from_date || to_date) {
