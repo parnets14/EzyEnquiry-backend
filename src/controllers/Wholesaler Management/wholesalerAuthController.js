@@ -443,18 +443,19 @@ async function approvalStatus(req, res) {
   }
 
   const company = await Company.findById(user.company_id)
-    .select('name status owner_name approved_at reject_reason')
+    .select('name status owner_name approved_at reject_reason suspend_reason')
     .lean()
 
   if (!company) return sendError(res, 'Company not found.', 404)
 
   sendSuccess(res, {
-    status:      company.status,           // 'Pending' | 'Approved' | 'Rejected'
+    status:      company.status,           // 'Pending' | 'Approved' | 'Rejected' | 'Suspended'
     ownerName:   user.name || company.owner_name || '',
     companyId:   String(company._id),
     companyName: company.name || '',
     approvedAt:  company.approved_at || null,
     rejectReason: company.reject_reason || '',
+    suspendReason: company.suspend_reason || '',
   })
 }
 

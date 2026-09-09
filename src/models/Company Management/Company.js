@@ -35,9 +35,12 @@ const companySchema = new mongoose.Schema(
     state:             { type: String, default: '' },
     pin_code:          { type: String, default: '' },
     subscription_plan: { type: String, default: 'Free' },
-    status:            { type: String, enum: ['Pending', 'Approved', 'Rejected'], default: 'Pending' },
+    status:            { type: String, enum: ['Pending', 'Approved', 'Rejected', 'Suspended'], default: 'Pending' },
     is_active:         { type: Boolean, default: true },
     reject_reason:     { type: String, default: '' },
+    suspend_reason:    { type: String, default: '' },
+    // status the company will return to when reactivated (usually 'Approved')
+    prev_status:       { type: String, default: '' },
     reviewed_by:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     docs_gst:          { type: Boolean, default: false },
     docs_pan:          { type: Boolean, default: false },

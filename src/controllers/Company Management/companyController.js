@@ -194,6 +194,82 @@ async function rejectCompany(req, res) {
   sendSuccess(res, company, 'Company rejected.')
 }
 
+/** PATCH /api/companies/:id/suspend  (Super Admin) — blocks app access in real time */
+async function suspendCompany(req, res) {
+  const reason = String(req.body?.reason || '').trim()
+  const company = await Company.findById(req.params.id)
+  if (!company) return sendError(res, 'Company not found.', 404)
+  if (company.status === 'Suspended') return sendError(res, 'Company is already suspended.', 400)
+
+  company.prev_status    = company.status   // remember where to return on reactivate
+  company.status         = 'Suspended'
+  company.is_active      = false
+  company.suspend_reason = reason
+  company.reviewed_by    = req.user._id
+  await company.save()
+
+  // NOTE: we intentionally keep the users' is_active=true so the app can still
+  // call /approval-status and show a proper "Suspended" screen. Data routes are
+  // blocked by requireActiveCompany middleware (real-time company status check).
+
+  // Notify the owner.
+  const owner = await User.findOne({ company_id: company._id, role: { $in: ['Company Owner', 'Retailer'] } }).lean()
+  if (owner) {
+    await Notification.create({
+      company_id:   company._id,
+      user_id:      owner._id,
+      type:         'suspension',
+      title:        'Account Suspended',
+      message:      `Your account has been suspended.${reason ? ` Reason: ${reason}.` : ''} Please contact support.`,
+      reference_id: company._id,
+      is_read:      false,
+    }).catch(() => {})
+    notifyRetailer(owner._id, {
+      title: 'Account Suspended',
+      body:  `Your account has been suspended.${reason ? ` Reason: ${reason}` : ''}`,
+      type:  'suspension',
+      referenceId: company._id,
+    })
+  }
+
+  sendSuccess(res, company.toObject(), 'Company suspended.')
+}
+
+/** PATCH /api/companies/:id/reactivate  (Super Admin) — restores access */
+async function reactivateCompany(req, res) {
+  const company = await Company.findById(req.params.id)
+  if (!company) return sendError(res, 'Company not found.', 404)
+  if (company.status !== 'Suspended') return sendError(res, 'Company is not suspended.', 400)
+
+  company.status         = company.prev_status || 'Approved'
+  company.is_active      = true
+  company.suspend_reason = ''
+  company.prev_status    = ''
+  company.reviewed_by    = req.user._id
+  await company.save()
+
+  const owner = await User.findOne({ company_id: company._id, role: { $in: ['Company Owner', 'Retailer'] } }).lean()
+  if (owner) {
+    await Notification.create({
+      company_id:   company._id,
+      user_id:      owner._id,
+      type:         'reactivation',
+      title:        'Account Reactivated',
+      message:      'Your account has been reactivated. You can now access the app again.',
+      reference_id: company._id,
+      is_read:      false,
+    }).catch(() => {})
+    notifyRetailer(owner._id, {
+      title: 'Account Reactivated',
+      body:  'Your account is active again. Welcome back!',
+      type:  'reactivation',
+      referenceId: company._id,
+    })
+  }
+
+  sendSuccess(res, company.toObject(), 'Company reactivated.')
+}
+
 /** PATCH /api/companies/:id/docs */
 async function updateDocs(req, res) {
   const { docs_gst, docs_pan, docs_address, docs_biz } = req.body
@@ -290,4 +366,4 @@ async function getCompanyDocument(req, res) {
   fs.createReadStream(absPath).pipe(res)
 }
 
-module.exports = { listCompanies, getCompany, createCompany, updateCompany, approveCompany, rejectCompany, updateDocs, deleteCompany, getCompanyDocument }
+module.exports = { listCompanies, getCompany, createCompany, updateCompany, approveCompany, rejectCompany, suspendCompany, reactivateCompany, updateDocs, deleteCompany, getCompanyDocument }

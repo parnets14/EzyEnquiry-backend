@@ -8,6 +8,29 @@ const { sendSuccess, sendError }           = require('../../utils/helpers')
 
 const STAFF_OTP_PURPOSE = 'staff_login'
 
+// Valid staff roles (must match config/permissions.js ROLE_MODULES keys).
+const STAFF_ROLES = ['Manager', 'Accountant', 'Sales Executive', 'Warehouse Staff']
+
+/**
+ * Map an employee's designation/department to one of the RBAC staff roles.
+ * Falls back to 'Sales Executive' when nothing matches.
+ */
+function roleFromDesignation(employee) {
+  const text = `${employee.designation || ''} ${employee.department || ''}`.toLowerCase()
+
+  // Exact role name match first (e.g. designation literally "Manager").
+  const exact = STAFF_ROLES.find(r => text.includes(r.toLowerCase()))
+  if (exact) return exact
+
+  // Keyword heuristics.
+  if (/\b(manager|admin|supervisor|owner|head)\b/.test(text)) return 'Manager'
+  if (/\b(account|accountant|finance|cashier|billing)\b/.test(text)) return 'Accountant'
+  if (/\b(warehouse|store|stock|inventory|dispatch|picker|packer|godown)\b/.test(text)) return 'Warehouse Staff'
+  if (/\b(sales|executive|marketing|bde|telecaller|crm)\b/.test(text)) return 'Sales Executive'
+
+  return 'Sales Executive'
+}
+
 function signToken(userId) {
   return jwt.sign({ userId }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
@@ -40,9 +63,18 @@ async function findActiveEmployeeByMobile(mobile) {
  * works with the shared `authenticate` middleware and company-scoped routes.
  */
 async function ensureStaffUser(employee) {
+  const desiredRole = roleFromDesignation(employee)
+
   if (employee.user_id) {
     const existing = await User.findById(employee.user_id).lean()
-    if (existing) return existing
+    if (existing) {
+      // Keep the staff user's role in sync with their current designation.
+      if (existing.role !== desiredRole && STAFF_ROLES.includes(desiredRole)) {
+        await User.findByIdAndUpdate(existing._id, { role: desiredRole })
+        existing.role = desiredRole
+      }
+      return existing
+    }
   }
 
   const digits = normaliseMobile(employee.mobile)
@@ -52,6 +84,14 @@ async function ensureStaffUser(employee) {
     company_id: employee.company_id,
     mobile: { $regex: `${digits}$` },
   }).lean()
+
+  if (user) {
+    // Existing user found by mobile — sync role to designation.
+    if (user.role !== desiredRole && STAFF_ROLES.includes(desiredRole)) {
+      await User.findByIdAndUpdate(user._id, { role: desiredRole })
+      user.role = desiredRole
+    }
+  }
 
   if (!user) {
     const placeholderEmail =
@@ -70,7 +110,7 @@ async function ensureStaffUser(employee) {
       name:       employee.name,
       email:      finalEmail,
       mobile:     digits,
-      role:       'Sales Executive',
+      role:       desiredRole,
       is_active:  true,
     })
     user = created.toObject()

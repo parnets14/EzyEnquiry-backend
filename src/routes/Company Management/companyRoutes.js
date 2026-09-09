@@ -12,6 +12,8 @@ router.post  ('/',                ctrl.createCompany);
 router.put   ('/:id',             ctrl.updateCompany);
 router.patch ('/:id/approve',     authorize('Super Admin'), ctrl.approveCompany);
 router.patch ('/:id/reject',      authorize('Super Admin'), ctrl.rejectCompany);
+router.patch ('/:id/suspend',     authorize('Super Admin'), ctrl.suspendCompany);
+router.patch ('/:id/reactivate',  authorize('Super Admin'), ctrl.reactivateCompany);
 router.patch ('/:id/docs',        ctrl.updateDocs);
 router.delete('/:id',             authorize('Super Admin'), ctrl.deleteCompany);
 

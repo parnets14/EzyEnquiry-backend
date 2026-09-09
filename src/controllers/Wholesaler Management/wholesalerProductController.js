@@ -217,6 +217,64 @@ async function listMyProducts(req, res) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PUT /api/wholesaler/products/:id
+// Update — ONLY the wholesaler's own product (company_id must match).
+// ─────────────────────────────────────────────────────────────────────────────
+async function updateProduct(req, res) {
+  const existing = await Product.findById(req.params.id).lean()
+  if (!existing) return sendError(res, 'Product not found.', 404)
+  if (String(existing.company_id) !== String(req.user.company_id)) {
+    return sendError(res, 'You can only edit products you created.', 403)
+  }
+
+  const b = req.body
+  const num = (v, d) => (v === '' || v == null ? d : parseFloat(v))
+  const update = {}
+
+  // Text/spec fields — only set when provided
+  const textFields = [
+    'name', 'alias', 'hsn_code', 'size', 'finish', 'material', 'color', 'surface',
+    'thickness', 'grade', 'tile_type', 'application', 'origin', 'manufacturer',
+    'design', 'collection', 'unit', 'description', 'product_type',
+  ]
+  textFields.forEach(f => { if (b[f] !== undefined) update[f] = b[f] })
+
+  // Reference ids
+  ;['brand_id', 'category_id', 'sub_category_id'].forEach(f => {
+    if (b[f] !== undefined) update[f] = b[f] || null
+  })
+
+  // Numeric fields
+  ;['pcs_per_box', 'sqft_per_box', 'weight_per_box', 'gst_percent',
+    'purchase_price', 'selling_price', 'dealer_price', 'retail_price',
+    'wholesale_rate', 'mrp'].forEach(f => {
+    if (b[f] !== undefined) update[f] = num(b[f], existing[f] ?? 0)
+  })
+
+  if (Array.isArray(b.image_urls)) update.image_urls = b.image_urls
+
+  // Guard duplicate code if code is being changed
+  if (b.code && String(b.code).trim() && String(b.code).trim() !== existing.code) {
+    const dup = await Product.findOne({ company_id: req.user.company_id, code: String(b.code).trim(), _id: { $ne: existing._id } }).lean()
+    if (dup) return sendError(res, `Product code "${String(b.code).trim()}" already exists.`, 409)
+    update.code = String(b.code).trim()
+  }
+
+  const product = await Product.findByIdAndUpdate(req.params.id, update, { new: true }).lean()
+  sendSuccess(res, product, 'Product updated.')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/wholesaler/products/upload-image  (multipart, field: "image")
+// Returns { url } — a public path the app stores in image_urls.
+// ─────────────────────────────────────────────────────────────────────────────
+async function uploadProductImage(req, res) {
+  if (!req.file) return sendError(res, 'No image file received.', 400)
+  const url = `/uploads/products/${req.file.filename}`
+  sendSuccess(res, { url }, 'Image uploaded.', 201)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DELETE /api/wholesaler/products/:id
 // Soft-delete — ONLY the wholesaler's own product (company_id must match).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,6 +341,6 @@ async function deleteAdminProduct(req, res) {
 }
 
 module.exports = {
-  listCatalog, getCatalogProduct, getFilters, createProduct, listMyProducts, deleteProduct,
+  listCatalog, getCatalogProduct, getFilters, createProduct, updateProduct, uploadProductImage, listMyProducts, deleteProduct,
   getAdminProduct, deleteAdminProduct,
 }
