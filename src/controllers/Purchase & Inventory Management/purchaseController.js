@@ -181,7 +181,7 @@ async function updatePurchase(req, res) {
   delete sanitised.status;
   delete sanitised.stock_in_done;
 
-  const { supplier_name, product_name, qty, rate, gst_percent = 18, invoice_number, delivery_number, purchase_date, notes, branch_id, branch_name, warehouse_id } = sanitised;
+  const { supplier_name, product_name, qty, unit, rate, gst_percent = 18, invoice_number, delivery_number, purchase_date, notes, branch_id, branch_name, warehouse_id } = sanitised;
   const amount       = parseFloat(qty) * parseFloat(rate);
   const gst_amount   = Math.round(amount * gst_percent / 100);
   const total_amount = amount + gst_amount;
@@ -189,7 +189,7 @@ async function updatePurchase(req, res) {
   const purchase = await Purchase.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },
     {
-      supplier_name, product_name, qty, rate, amount, gst_percent, gst_amount, total_amount,
+      supplier_name, product_name, qty, unit, rate, amount, gst_percent, gst_amount, total_amount,
       invoice_number:  invoice_number  || '',
       delivery_number: delivery_number || '',
       purchase_date:   purchase_date   || null,

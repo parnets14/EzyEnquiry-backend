@@ -1,5 +1,6 @@
 const { sendSuccess, sendError } = require('../../utils/helpers');
-const Invoice = require('../../models/Finance Management/Invoice');
+const Invoice  = require('../../models/Finance Management/Invoice');
+const Dispatch = require('../../models/Marketplace Management/Dispatch');
 
 // ── Helper: auto-generate next invoice number ─────────────────
 async function generateInvoiceNo(companyId) {
@@ -30,6 +31,22 @@ async function listInvoices(req, res) {
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const query = { company_id: req.user.company_id };
+
+  // Staff App: only show invoices linked to orders assigned to this staff user.
+  if (req.isStaffApp) {
+    const Order = require('../../models/Marketplace Management/Order');
+    const assignedOrders = await Order.find(
+      { company_id: req.user.company_id, assigned_to: req.user._id },
+      { order_code: 1 }
+    ).lean();
+    const assignedOrderCodes = assignedOrders.map(o => o.order_code).filter(Boolean);
+    // If staff has no assigned orders, return empty immediately.
+    if (assignedOrderCodes.length === 0) {
+      return sendSuccess(res, { invoices: [], total: 0, page: 1, limit: parseInt(limit) });
+    }
+    query.order_no = { $in: assignedOrderCodes };
+  }
+
   if (status)         query.status         = status;
   if (payment_status) query.payment_status = payment_status;
   if (from_date || to_date) {
@@ -72,7 +89,24 @@ async function getInvoice(req, res) {
     company_id: req.user.company_id,
   }).lean();
   if (!invoice) return sendError(res, 'Invoice not found.', 404);
-  sendSuccess(res, invoice);
+
+  // ── Resolve linked dispatch ───────────────────────────────
+  // Priority 1: dispatch_id stored directly on the invoice (new invoices).
+  // Priority 2: look up Dispatch by order_id (covers all auto-created invoices
+  //             that existed before dispatch_id was added to the model).
+  let dispatch = null;
+  if (invoice.dispatch_id) {
+    dispatch = await Dispatch.findById(invoice.dispatch_id)
+      .select('dispatch_code order_id status driver_name driver_mobile vehicle_number lr_number transport_name dispatch_date expected_delivery delivered_date notes')
+      .lean();
+  }
+  if (!dispatch && invoice.order_id) {
+    dispatch = await Dispatch.findOne({ order_id: invoice.order_id })
+      .select('dispatch_code order_id status driver_name driver_mobile vehicle_number lr_number transport_name dispatch_date expected_delivery delivered_date notes')
+      .lean();
+  }
+
+  sendSuccess(res, { ...invoice, dispatch: dispatch || null });
 }
 
 // ── POST /api/invoices ────────────────────────────────────────
@@ -97,6 +131,8 @@ async function createInvoice(req, res) {
     sale_code:        body.sale_code        || '',
     order_id:         body.order_id         || null,
     order_no:         body.order_no         || '',
+    dispatch_id:      body.dispatch_id      || null,
+    dispatch_code:    body.dispatch_code    || '',
 
     // Customer
     customer_id:      body.customer_id      || null,
@@ -144,6 +180,7 @@ async function updateInvoice(req, res) {
 
   const fields = [
     'quotation_id', 'quotation_no', 'sale_id', 'sale_code', 'order_id', 'order_no',
+    'dispatch_id', 'dispatch_code',
     'customer_id', 'customer_name', 'customer_phone', 'customer_email',
     'billing_address', 'shipping_address', 'gstin',
     'invoice_date', 'due_date',

@@ -95,7 +95,11 @@ async function verifyOtpHandler(req, res) {
     if (!user)           return sendError(res, 'User not found.', 404)
     if (!user.is_active) return sendError(res, 'Account deactivated.', 403)
 
-    await User.findByIdAndUpdate(user._id, { last_login: new Date() })
+    const verifiedAt = new Date()
+    const verificationUpdate = { last_login: verifiedAt }
+    if (user.email === target.toLowerCase()) verificationUpdate.email_verified_at = verifiedAt
+    if (user.mobile === target) verificationUpdate.mobile_verified_at = verifiedAt
+    await User.findByIdAndUpdate(user._id, verificationUpdate)
     const token = signToken(user._id)
 
     // Build enriched user response with company status (for mobile app)
@@ -107,6 +111,7 @@ async function verifyOtpHandler(req, res) {
     }
     const enrichedUser = {
       ...user,
+      ...verificationUpdate,
       company_name:      company?.name              || null,
       company_status:    company?.status            || null,
       subscription_plan: company?.subscription_plan || null,
@@ -117,7 +122,19 @@ async function verifyOtpHandler(req, res) {
     return sendSuccess(res, { token, user: enrichedUser }, 'OTP verified. Login successful.')
   }
 
-  sendSuccess(res, { verified: true }, 'OTP verified successfully.')
+  const normalizedTarget = target.toLowerCase()
+  const verifiedAt = new Date()
+  const user = await User.findOne({
+    $or: [{ email: normalizedTarget }, { mobile: target }],
+  }).select('_id email mobile').lean()
+  if (user) {
+    const update = {}
+    if (user.email === normalizedTarget) update.email_verified_at = verifiedAt
+    if (user.mobile === target) update.mobile_verified_at = verifiedAt
+    if (Object.keys(update).length) await User.findByIdAndUpdate(user._id, update)
+  }
+
+  sendSuccess(res, { verified: true, verified_at: verifiedAt }, 'OTP verified successfully.')
 }
 
 /** GET /api/auth/me */

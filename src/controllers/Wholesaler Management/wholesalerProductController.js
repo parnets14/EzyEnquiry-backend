@@ -42,7 +42,9 @@ async function createProduct(req, res) {
   const num = (v, d = 0) => (v === '' || v == null ? d : parseFloat(v))
 
   const product = await Product.create({
-    company_id:     companyId,
+    company_id:      companyId,
+    created_by:      req.user._id || req.user.id,
+    created_by_type: 'Wholesaler',
     code,
     name:           String(b.name).trim(),
     alias:          b.alias || '',

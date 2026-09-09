@@ -61,6 +61,8 @@ const invoiceSchema = new mongoose.Schema(
     sale_code:        { type: String, default: '' },
     order_id:         { type: mongoose.Schema.Types.ObjectId, ref: 'Order',     default: null },
     order_no:         { type: String, default: '' },
+    dispatch_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Dispatch',  default: null },
+    dispatch_code:    { type: String, default: '' },
 
     // ── Customer Info ──────────────────────────────────────
     customer_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Customer',  default: null },
@@ -97,6 +99,21 @@ const invoiceSchema = new mongoose.Schema(
     },
     payment_history:  { type: [paymentHistorySchema], default: [] },
 
+    // ── Who created/sent the underlying order (the retailer) ──
+    // Who generated this invoice (the Admin/seller staff).
+    created_by_name:    { type: String, default: '' },
+    created_by_company: { type: String, default: '' },
+    created_by_person:  { type: String, default: '' },
+    created_by_mobile:  { type: String, default: '' },
+    created_by_email:   { type: String, default: '' },
+    created_by_type:    { type: String, default: '' }, // Admin | Wholesaler | Retailer App | Staff App
+
+    // The retailer this supply was routed through (who raised the order).
+    retailer_name:    { type: String, default: '' },
+    retailer_company: { type: String, default: '' },
+    retailer_mobile:  { type: String, default: '' },
+    retailer_email:   { type: String, default: '' },
+
     // ── Meta ───────────────────────────────────────────────
     remarks:          { type: String, default: '' },
     terms:            { type: String, default: '' },
@@ -115,5 +132,7 @@ invoiceSchema.index({ company_id: 1, status: 1 });
 invoiceSchema.index({ company_id: 1, invoice_no: 1 });
 invoiceSchema.index({ company_id: 1, payment_status: 1 });
 invoiceSchema.index({ company_id: 1, customer_id: 1 });
+invoiceSchema.index({ company_id: 1, dispatch_id: 1 });
+invoiceSchema.index({ company_id: 1, order_id: 1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

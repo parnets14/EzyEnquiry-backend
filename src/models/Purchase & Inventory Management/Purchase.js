@@ -10,6 +10,7 @@ const purchaseSchema = new mongoose.Schema(
     product_code:    { type: String, default: '' },
     product_name:    { type: String, default: '' },
     qty:             { type: Number, required: true },
+    unit:            { type: String, default: '' },
     rate:            { type: Number, required: true },
     amount:          { type: Number, default: 0 },
     gst_percent:     { type: Number, default: 18 },
