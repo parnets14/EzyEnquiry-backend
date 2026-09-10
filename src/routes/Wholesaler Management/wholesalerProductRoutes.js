@@ -6,14 +6,39 @@
  * Wholesaler = View Only. No create / edit / delete / rate-setting.
  */
 const express = require('express')
+const multer  = require('multer')
+const path    = require('path')
+const fs      = require('fs')
 const router  = express.Router()
 const ctrl    = require('../../controllers/Wholesaler Management/wholesalerProductController')
+
+// ── Multer — product image uploads ───────────────────────────
+const PRODUCT_DIR = path.join(__dirname, '../../../uploads/products')
+if (!fs.existsSync(PRODUCT_DIR)) fs.mkdirSync(PRODUCT_DIR, { recursive: true })
+
+const imageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, PRODUCT_DIR),
+    filename:    (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase()
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`)
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(file.mimetype)
+    cb(ok ? null : new Error('Only JPEG, PNG, WebP images are allowed.'), ok)
+  },
+}).single('image')
 
 // Must be before /:id to avoid route conflict
 router.get('/filters', ctrl.getFilters)
 
 // Wholesaler's own products (created by them)
 router.get('/mine', ctrl.listMyProducts)
+
+// Upload a product image → returns { url }
+router.post('/upload-image', imageUpload, ctrl.uploadProductImage)
 
 // Create a product (wholesaler adds their own item)
 router.post('/', ctrl.createProduct)
@@ -23,6 +48,9 @@ router.get('/',    ctrl.listCatalog)
 
 // Single product detail
 router.get('/:id', ctrl.getCatalogProduct)
+
+// Update own product
+router.put('/:id', ctrl.updateProduct)
 
 // Delete own product
 router.delete('/:id', ctrl.deleteProduct)

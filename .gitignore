@@ -11,3 +11,5 @@ dist/
 
 # Firebase credentials
 firebase-service-account.json
+
+_srccheck.js

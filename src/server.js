@@ -21,7 +21,8 @@ const { migrateInventoryBuckets }        = require('./utils/migrateInventory')
 const { errorHandler }       = require('./middleware/errorHandler')
 const { rateLimiter }        = require('./middleware/rateLimiter')
 const { authenticate,
-        requireCompany }     = require('./middleware/auth')
+        requireCompany,
+        requireActiveCompany } = require('./middleware/auth')
 const { requireRetailerIdentity,
         requireApprovedSeller,
         denyRetailerErpAccess } = require('./middleware/retailerAccess')
@@ -169,15 +170,15 @@ const ERP_ROUTE_PREFIXES = [
 app.use(ERP_ROUTE_PREFIXES, authenticate, denyRetailerErpAccess, auditLogger)
 
 // ── Wholesaler Protected Routes ───────────────────────────────
-app.use('/api/wholesaler/products',   authenticate, wholesalerProductRoutes)
-app.use('/api/wholesaler/inventory',  authenticate, wholesalerInventoryRoutes)
-app.use('/api/wholesaler/warehouses', authenticate, require('./routes/Wholesaler Management/wholesalerWarehouseRoutes'))
-app.use('/api/wholesaler/purchases',  authenticate, require('./routes/Wholesaler Management/wholesalerPurchaseRoutes'))
+app.use('/api/wholesaler/products',   authenticate, requireActiveCompany, wholesalerProductRoutes)
+app.use('/api/wholesaler/inventory',  authenticate, requireActiveCompany, wholesalerInventoryRoutes)
+app.use('/api/wholesaler/warehouses', authenticate, requireActiveCompany, require('./routes/Wholesaler Management/wholesalerWarehouseRoutes'))
+app.use('/api/wholesaler/purchases',  authenticate, requireActiveCompany, require('./routes/Wholesaler Management/wholesalerPurchaseRoutes'))
 app.use('/api/wholesaler/all-purchases', authenticate, require('./routes/Wholesaler Management/wholesalerAdminRoutes'))
-app.use('/api/wholesaler/quotations',    authenticate, require('./routes/Wholesaler Management/wholesalerQuotationRoutes'))
+app.use('/api/wholesaler/quotations',    authenticate, requireActiveCompany, require('./routes/Wholesaler Management/wholesalerQuotationRoutes'))
 app.use('/api/wholesaler/all-quotations', authenticate, require('./routes/Wholesaler Management/wholesalerAdminQuotationRoutes'))
 app.use('/api/wholesaler/all-products',   authenticate, require('./routes/Wholesaler Management/wholesalerAdminProductRoutes'))
-app.use('/api/wholesaler/invoices',       authenticate, require('./routes/Wholesaler Management/wholesalerInvoiceRoutes'))
+app.use('/api/wholesaler/invoices',       authenticate, requireActiveCompany, require('./routes/Wholesaler Management/wholesalerInvoiceRoutes'))
 
 // ── Protected Routes ──────────────────────────────────────────
 app.use('/api/companies',     authenticate, moduleAccess(MODULES.COMPANY), companyRoutes)
@@ -189,32 +190,31 @@ app.use('/api/users',         authenticate, requireCompany, moduleAccess(MODULES
 app.use('/api/categories',     authenticate, requireCompany, moduleAccess(MODULES.CATEGORIES), categoryRoutes)
 app.use('/api/sub-categories', authenticate, requireCompany, moduleAccess(MODULES.CATEGORIES), require('./routes/Product Management/subCategoryRoutes'))
 app.use('/api/brands',         authenticate, requireCompany, moduleAccess(MODULES.BRANDS), brandRoutes)
-// Products: /for-select is unguarded (auth+company only); all other routes go through moduleAccess
-app.use('/api/products',       authenticate, requireCompany, productRoutes)
+app.use('/api/products',       authenticate, requireCompany, moduleAccess(MODULES.PRODUCTS), productRoutes)
 app.use('/api/inventory',      authenticate, requireCompany, moduleAccess(MODULES.INVENTORY), inventoryRoutes)
 app.use('/api/warehouses',     authenticate, requireCompany, moduleAccess(MODULES.WAREHOUSES), warehouseRoutes)
 app.use('/api/suppliers',      authenticate, requireCompany, moduleAccess(MODULES.SUPPLIERS), supplierRoutes)
 
 // ── Marketplace ───────────────────────────────────────────────
-app.use('/api/enquiries',     authenticate, requireCompany, moduleAccess(MODULES.ENQUIRIES), enquiryRoutes)
-app.use('/api/orders',        authenticate, requireCompany, moduleAccess(MODULES.ORDERS), orderRoutes)
-app.use('/api/dispatches',    authenticate, requireCompany, moduleAccess(MODULES.DISPATCHES), dispatchRoutes)
+app.use('/api/enquiries',     authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.ENQUIRIES), enquiryRoutes)
+app.use('/api/orders',        authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.ORDERS), orderRoutes)
+app.use('/api/dispatches',    authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.DISPATCHES), dispatchRoutes)
 
 // ── CRM ───────────────────────────────────────────────────────
-app.use('/api/customers',     authenticate, requireCompany, moduleAccess(MODULES.CUSTOMERS), customerRoutes)
-app.use('/api/leads',         authenticate, requireCompany, moduleAccess(MODULES.LEADS), leadRoutes)
-app.use('/api/followups',     authenticate, requireCompany, moduleAccess(MODULES.FOLLOWUPS), followupRoutes)
+app.use('/api/customers',     authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.CUSTOMERS), customerRoutes)
+app.use('/api/leads',         authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.LEADS), leadRoutes)
+app.use('/api/followups',     authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.FOLLOWUPS), followupRoutes)
 
 // ── Finance ───────────────────────────────────────────────────
-app.use('/api/purchases',     authenticate, requireCompany, moduleAccess(MODULES.PURCHASES), purchaseRoutes)
-app.use('/api/stock-transfers', authenticate, requireCompany, moduleAccess(MODULES.STOCK_TRANSFER), stockTransferRoutes)
-app.use('/api/sales',         authenticate, requireCompany, moduleAccess(MODULES.SALES), salesRoutes)
-app.use('/api/expenses',      authenticate, requireCompany, moduleAccess(MODULES.EXPENSES), expenseRoutes)
-app.use('/api/payments',      authenticate, requireCompany, moduleAccess(MODULES.PAYMENTS), paymentRoutes)
-app.use('/api/accounts',      authenticate, requireCompany, moduleAccess(MODULES.ACCOUNTS), accountsRoutes)
-app.use('/api/profit-loss',   authenticate, requireCompany, moduleAccess(MODULES.PROFIT_LOSS), profitLossRoutes)
-app.use('/api/quotations',    authenticate, requireCompany, moduleAccess(MODULES.QUOTATIONS), quotationRoutes)
-app.use('/api/invoices',      authenticate, requireCompany, moduleAccess(MODULES.INVOICES), invoiceRoutes)
+app.use('/api/purchases',     authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.PURCHASES), purchaseRoutes)
+app.use('/api/stock-transfers', authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.STOCK_TRANSFER), stockTransferRoutes)
+app.use('/api/sales',         authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.SALES), salesRoutes)
+app.use('/api/expenses',      authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.EXPENSES), expenseRoutes)
+app.use('/api/payments',      authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.PAYMENTS), paymentRoutes)
+app.use('/api/accounts',      authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.ACCOUNTS), accountsRoutes)
+app.use('/api/profit-loss',   authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.PROFIT_LOSS), profitLossRoutes)
+app.use('/api/quotations',    authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.QUOTATIONS), quotationRoutes)
+app.use('/api/invoices',      authenticate, requireCompany, requireActiveCompany, moduleAccess(MODULES.INVOICES), invoiceRoutes)
 
 // ── HR ────────────────────────────────────────────────────────
 app.use('/api/employees',        authenticate, requireCompany, moduleAccess(MODULES.EMPLOYEES), employeeRoutes)

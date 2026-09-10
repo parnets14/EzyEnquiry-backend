@@ -62,4 +62,31 @@ function requireCompany(req, res, next) {
   next()
 }
 
-module.exports = { authenticate, authorize, requireCompany }
+/**
+ * Block data access in real time when the company is Suspended or inactive.
+ * Super Admins bypass. Loads the company fresh on each request so an admin
+ * suspension takes effect within seconds (no app restart needed).
+ * Returns 403 with code 'ACCOUNT_SUSPENDED' so clients can show a clear screen.
+ */
+async function requireActiveCompany(req, res, next) {
+  if (req.user?.role === 'Super Admin') return next()
+  if (!req.user?.company_id) return next()   // requireCompany handles the missing-company case
+  try {
+    const Company = require('../models/Company Management/Company')
+    const company = await Company.findById(req.user.company_id).select('status is_active suspend_reason').lean()
+    if (company && (company.status === 'Suspended' || company.is_active === false)) {
+      return res.status(403).json({
+        success: false,
+        code: 'ACCOUNT_SUSPENDED',
+        message: company.suspend_reason
+          ? `Your account is suspended. Reason: ${company.suspend_reason}`
+          : 'Your account has been suspended. Please contact support.',
+      })
+    }
+    return next()
+  } catch (err) {
+    return next(err)
+  }
+}
+
+module.exports = { authenticate, authorize, requireCompany, requireActiveCompany }
