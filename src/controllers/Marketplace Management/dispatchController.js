@@ -252,7 +252,7 @@ async function markInTransit(req, res) {
   const orderId = dispatch.order_id?._id || dispatch.order_id;
   if (orderId) {
     // Guard: only push if the last status_history entry isn't already 'Out for Delivery'
-    const existingOrder = await Order.findById(orderId).select('status_history').lean();
+    const existingOrder = await Order.findById(orderId).select('status_history buyer_user_id order_code').lean();
     const lastEntry = existingOrder?.status_history?.slice(-1)[0];
     const updates = { status: 'Out for Delivery' };
     if (!lastEntry || lastEntry.status !== 'Out for Delivery') {
@@ -268,6 +268,15 @@ async function markInTransit(req, res) {
       };
     }
     await Order.findByIdAndUpdate(orderId, updates);
+    // Push to the retailer buyer on in-transit (marketplace orders).
+    if (existingOrder?.buyer_user_id) {
+      notifyRetailer(existingOrder.buyer_user_id, {
+        title: `Order ${existingOrder.order_code} In Transit`,
+        body:  'Your order is on the way.',
+        type:  'dispatch',
+        referenceId: existingOrder._id,
+      });
+    }
   }
   sendSuccess(res, dispatch, 'Marked as Out for Delivery.');
 }
@@ -281,7 +290,11 @@ async function markDelivered(req, res) {
 
   const dispatch = await Dispatch.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },
-    { status: 'Delivered', delivered_date },
+    {
+      status: 'Delivered', delivered_date,
+      ...(req.body.pod_image_url ? { pod_image_url: req.body.pod_image_url } : {}),
+      ...(req.body.pod_remarks   ? { pod_remarks:   req.body.pod_remarks }   : {}),
+    },
     { new: true }
   ).lean();
   if (!dispatch) return sendError(res, 'Dispatch not found.', 404);
@@ -433,4 +446,10 @@ async function updateDispatch(req, res) {
   sendSuccess(res, dispatch, 'Dispatch updated.');
 }
 
-module.exports = { listDispatches, getDispatch, createDispatch, markInTransit, markDelivered, updateDispatch };
+// POST /api/dispatches/upload-pod  (multipart, field "pod") → { url }
+async function uploadPod(req, res) {
+  if (!req.file) return sendError(res, 'No image received.', 400);
+  sendSuccess(res, { url: `/uploads/pod/${req.file.filename}` }, 'Proof uploaded.', 201);
+}
+
+module.exports = { listDispatches, getDispatch, createDispatch, markInTransit, markDelivered, updateDispatch, uploadPod };

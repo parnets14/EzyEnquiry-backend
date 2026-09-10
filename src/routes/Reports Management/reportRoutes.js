@@ -11,6 +11,7 @@ router.get('/customers',  ctrl.getCustomerReport);
 router.get('/suppliers',  ctrl.getSupplierReport);
 router.get('/inventory',  ctrl.getInventoryReport);
 router.get('/employees',  ctrl.getEmployeeReport);
+router.get('/analytics',  ctrl.getAnalytics);
 
 // Export any report as PDF or Excel:
 //   GET /api/reports/:type/export?format=pdf|excel&from_date=&to_date=&group_by=

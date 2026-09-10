@@ -19,6 +19,8 @@ const enquirySchema = new mongoose.Schema(
     offered_price:     { type: Number, default: null },
     status:            { type: String, enum: ['New', 'Viewed', 'Replied', 'Negotiation', 'Confirmed', 'Cancelled'], default: 'New' },
     distributor_reply: { type: String, default: '' },
+    available_quantity:{ type: Number, default: null },
+    delivery_timeline: { type: String, default: '' },
     negotiation_note:  { type: String, default: '' },
     remarks:           { type: String, default: '' },
     order_id:          { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },

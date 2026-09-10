@@ -194,6 +194,58 @@ async function rejectCompany(req, res) {
   sendSuccess(res, company, 'Company rejected.')
 }
 
+/** PATCH /api/companies/:id/request-resubmit  (Super Admin)
+ *  Ask the wholesaler to re-upload documents. Company goes back to 'Pending',
+ *  flagged docs are reset so the app re-opens the upload step.
+ *  body: { reason, docs?: ['gst','pan','trade','registration'] }
+ */
+async function requestResubmission(req, res) {
+  const reason = String(req.body?.reason || '').trim()
+  const docs = Array.isArray(req.body?.docs) ? req.body.docs : []   // which docs to redo; empty = all
+  const company = await Company.findById(req.params.id)
+  if (!company) return sendError(res, 'Company not found.', 404)
+
+  company.status        = 'Pending'
+  company.reject_reason = reason
+  company.reviewed_by   = req.user._id
+
+  // Reset the flagged docs (or all if none specified) so the app asks to re-upload.
+  const map = { gst: 'docs_gst', pan: 'docs_pan', trade: 'docs_biz', registration: 'docs_address' }
+  const targets = docs.length ? docs : ['gst', 'pan', 'trade', 'registration']
+  for (const d of targets) {
+    if (map[d]) company[map[d]] = false
+  }
+  for (const document of company.kyc_documents || []) {
+    if (!docs.length || docs.includes(document.document_type)) {
+      document.status = 'Rejected'
+      document.reject_reason = reason
+      document.reviewed_at = new Date()
+    }
+  }
+  await company.save()
+
+  const owner = await User.findOne({ company_id: company._id, role: { $in: ['Company Owner', 'Retailer'] } }).lean()
+  if (owner) {
+    await Notification.create({
+      company_id:   company._id,
+      user_id:      owner._id,
+      type:         'resubmission',
+      title:        'Document Resubmission Required',
+      message:      `Please re-upload your documents.${reason ? ` Reason: ${reason}.` : ''}`,
+      reference_id: company._id,
+      is_read:      false,
+    }).catch(() => {})
+    notifyRetailer(owner._id, {
+      title: 'Resubmission Required',
+      body:  `Please re-upload your documents.${reason ? ` Reason: ${reason}` : ''}`,
+      type:  'resubmission',
+      referenceId: company._id,
+    })
+  }
+
+  sendSuccess(res, company.toObject(), 'Resubmission requested.')
+}
+
 /** PATCH /api/companies/:id/suspend  (Super Admin) — blocks app access in real time */
 async function suspendCompany(req, res) {
   const reason = String(req.body?.reason || '').trim()
@@ -366,4 +418,4 @@ async function getCompanyDocument(req, res) {
   fs.createReadStream(absPath).pipe(res)
 }
 
-module.exports = { listCompanies, getCompany, createCompany, updateCompany, approveCompany, rejectCompany, suspendCompany, reactivateCompany, updateDocs, deleteCompany, getCompanyDocument }
+module.exports = { listCompanies, getCompany, createCompany, updateCompany, approveCompany, rejectCompany, requestResubmission, suspendCompany, reactivateCompany, updateDocs, deleteCompany, getCompanyDocument }

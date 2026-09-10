@@ -1,5 +1,10 @@
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
 const Notification = require('../../models/System Management/Notification');
+const User         = require('../../models/User Management/User');
+const Company      = require('../../models/Company Management/Company');
+const { notifyRetailer } = require('../../utils/pushHelper');
+
+const OWNER_ROLES = ['Company Owner', 'Retailer'];
 
 /** GET /api/notifications */
 async function listNotifications(req, res) {
@@ -43,4 +48,68 @@ async function deleteNotification(req, res) {
   sendSuccess(res, null, 'Notification deleted.');
 }
 
-module.exports = { listNotifications, markNotificationRead, markAllNotificationsRead, deleteNotification };
+/**
+ * Deliver one notification to a company: create the DB record for the owner
+ * and fire a best-effort push. Returns true if delivered.
+ */
+async function deliverToCompany(companyId, { title, message, type }) {
+  const owner = await User.findOne({ company_id: companyId, role: { $in: OWNER_ROLES } })
+    .select('_id').lean();
+  await Notification.create({
+    company_id: companyId,
+    user_id:    owner ? owner._id : null,
+    type:       type || 'admin_message',
+    title,
+    message,
+    is_read:    false,
+  }).catch(() => {});
+  if (owner) notifyRetailer(owner._id, { title, body: message, type: type || 'admin_message' });
+  return !!owner;
+}
+
+/**
+ * POST /api/notifications  (Super Admin)
+ * Send a notification to a single company.
+ * body: { company_id, title, message, type? }
+ */
+async function createNotification(req, res) {
+  if (req.user.role !== 'Super Admin') return sendError(res, 'Access denied. Super Admin only.', 403);
+  const { company_id, title, message, type } = req.body;
+  if (!company_id) return sendError(res, 'company_id is required.');
+  if (!title || !String(title).trim()) return sendError(res, 'title is required.');
+  if (!message || !String(message).trim()) return sendError(res, 'message is required.');
+
+  const company = await Company.findById(company_id).select('_id name').lean();
+  if (!company) return sendError(res, 'Company not found.', 404);
+
+  await deliverToCompany(company._id, { title: title.trim(), message: message.trim(), type });
+  sendSuccess(res, { company: company.name }, 'Notification sent.', 201);
+}
+
+/**
+ * POST /api/notifications/broadcast  (Super Admin)
+ * Send a notification to every company on the platform (or only a status subset).
+ * body: { title, message, type?, status? }  status default 'Approved'.
+ */
+async function broadcastNotification(req, res) {
+  if (req.user.role !== 'Super Admin') return sendError(res, 'Access denied. Super Admin only.', 403);
+  const { title, message, type, status } = req.body;
+  if (!title || !String(title).trim()) return sendError(res, 'title is required.');
+  if (!message || !String(message).trim()) return sendError(res, 'message is required.');
+
+  const query = {};
+  if (status && status !== 'All') query.status = status;
+  const companies = await Company.find(query).select('_id').lean();
+
+  let sent = 0;
+  for (const c of companies) {
+    await deliverToCompany(c._id, { title: title.trim(), message: message.trim(), type });
+    sent += 1;
+  }
+  sendSuccess(res, { companies: sent }, `Broadcast sent to ${sent} companies.`, 201);
+}
+
+module.exports = {
+  listNotifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
+  createNotification, broadcastNotification,
+};

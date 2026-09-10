@@ -16,7 +16,40 @@
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
 const Inventory     = require('../../models/Purchase & Inventory Management/Inventory');
 const StockMovement = require('../../models/Purchase & Inventory Management/StockMovement');
+const Product       = require('../../models/Product Management/Product');
+const User          = require('../../models/User Management/User');
+const Notification  = require('../../models/System Management/Notification');
+const { notifyRetailer } = require('../../utils/pushHelper');
 const mongoose      = require('mongoose');
+
+/**
+ * Notify the company owner about a low-stock / out-of-stock event.
+ * Creates an in-app Notification and fires a best-effort push. Non-blocking.
+ */
+async function notifyStockOwner(companyId, productId, kind, threshold) {
+  const [product, owner] = await Promise.all([
+    Product.findById(productId).select('name code').lean(),
+    User.findOne({ company_id: companyId, role: { $in: ['Company Owner', 'Wholesaler', 'Retailer'] } }).select('_id').lean(),
+  ]);
+  const pname = product?.name || 'A product';
+  const isOut = kind === 'out_of_stock';
+  const title = isOut ? 'Out of Stock' : 'Low Stock Alert';
+  const message = isOut
+    ? `"${pname}" is now out of stock. Restock soon.`
+    : `"${pname}" is running low (at or below ${threshold ?? 50} units).`;
+
+  await Notification.create({
+    company_id: companyId,
+    user_id:    owner ? owner._id : null,
+    type:       isOut ? 'out_of_stock' : 'low_stock',
+    title,
+    message,
+    reference_id: productId,
+    is_read:    false,
+  }).catch(() => {});
+
+  if (owner) notifyRetailer(owner._id, { title, body: message, type: isOut ? 'out_of_stock' : 'low_stock', referenceId: productId });
+}
 
 // ── Ensure Warehouse is registered before populate ──────────────────────────
 require('../../models/Purchase & Inventory Management/Warehouse');
@@ -235,7 +268,7 @@ async function getInventorySummary(req, res) {
 // PATCH /api/inventory/adjust — manual stock adjustment (stock-in / correction)
 // ─────────────────────────────────────────────────────────────────────────────
 async function adjustStock(req, res) {
-  const { product_id, warehouse_id, adjustment, reason, reference_type, reference_id, purchase_rate } = req.body;
+  const { product_id, warehouse_id, adjustment, reason, reference_type, reference_id, purchase_rate, low_stock_alert } = req.body;
   if (!product_id || adjustment === undefined)
     return sendError(res, 'product_id and adjustment are required.');
 
@@ -278,9 +311,22 @@ async function adjustStock(req, res) {
     },
   };
 
-  if (purchase_rate !== undefined) update.$set = { purchase_rate: parseFloat(purchase_rate) };
+  if (purchase_rate !== undefined) update.$set = { ...(update.$set || {}), purchase_rate: parseFloat(purchase_rate) };
+  // Allow setting the configurable low-stock threshold in the same call.
+  if (low_stock_alert !== undefined && low_stock_alert !== '' && !isNaN(parseFloat(low_stock_alert)))
+    update.$set = { ...(update.$set || {}), low_stock_alert: parseFloat(low_stock_alert) };
 
   const updated = await Inventory.findByIdAndUpdate(inv._id, update, { new: true }).lean();
+
+  // ── Low-stock / out-of-stock alerts (fire on downward crossing) ──
+  try {
+    const threshold = updated.low_stock_alert ?? 50;
+    if (!isIn && prevAvailable > 0 && updated.available_stock <= 0) {
+      await notifyStockOwner(req.user.company_id, product_id, 'out_of_stock');
+    } else if (!isIn && prevAvailable > threshold && updated.available_stock <= threshold && updated.available_stock > 0) {
+      await notifyStockOwner(req.user.company_id, product_id, 'low_stock', threshold);
+    }
+  } catch { /* alerts are best-effort */ }
 
   await logMovement({
     company_id:     req.user.company_id,

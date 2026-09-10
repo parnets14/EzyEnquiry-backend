@@ -828,9 +828,83 @@ async function claimOrder(req, res) {
   sendSuccess(res, order, `Order ${order.order_code} claimed successfully!`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/orders/:id/invoice — generate a GST invoice from an order (idempotent)
+// ─────────────────────────────────────────────────────────────────────────────
+async function generateOrderInvoice(req, res) {
+  const order = await Order.findOne({ _id: req.params.id, company_id: req.user.company_id }).lean();
+  if (!order) return sendError(res, 'Order not found.', 404);
+  if (order.status === 'New') return sendError(res, 'Accept the order before generating an invoice.', 422);
+
+  // Idempotent — reuse an existing invoice for this order.
+  const existing = await Invoice.findOne({ company_id: req.user.company_id, order_id: order._id }).lean();
+  if (existing) return sendSuccess(res, existing, 'Invoice already exists for this order.', 200);
+
+  // Build line items from the order (multi-item or single-product order).
+  const srcItems = Array.isArray(order.items) && order.items.length
+    ? order.items
+    : [{
+        product_id: order.product_id || null, product_name: order.product_name || '',
+        product_code: order.product_code || '', unit: order.unit || 'Pcs',
+        qty: order.qty || 0, rate: order.rate || 0, gst_percent: order.gst_percent || 0,
+      }];
+
+  let subtotal = 0, gstTotal = 0;
+  const items = srcItems.map(it => {
+    const qty = Number(it.qty) || 0;
+    const rate = Number(it.rate) || 0;
+    const gstPct = Number(it.gst_percent ?? it.gst_rate ?? order.gst_percent ?? 0);
+    const amount = round2(qty * rate);
+    const gstAmt = round2(amount * gstPct / 100);
+    subtotal += amount; gstTotal += gstAmt;
+    return { product_id: it.product_id || null, product_name: it.product_name || '', product_code: it.product_code || '',
+             unit: it.unit || 'Pcs', qty, rate, gst_percent: gstPct, amount, gst_amount: gstAmt, total: round2(amount + gstAmt) };
+  });
+  const grand_total = round2(subtotal + gstTotal + (Number(order.transport_cost) || 0) + (Number(order.packing_cost) || 0) - (Number(order.discount) || 0));
+
+  const num = await Invoice.findOne({ company_id: req.user.company_id, invoice_no: /^INV-/ }, { invoice_no: 1 })
+    .sort({ created_at: -1 }).lean();
+  const seq = num?.invoice_no ? parseInt(num.invoice_no.split('-')[1], 10) : 0;
+  const invoice_no = `INV-${String(seq + 1).padStart(4, '0')}`;
+
+  const invoice = await Invoice.create({
+    company_id:     req.user.company_id,
+    invoice_no,
+    order_id:       order._id,
+    order_no:       order.order_code || '',
+    customer_id:    order.customer_id || null,
+    customer_name:  order.customer_name || '',
+    customer_phone: order.customer_mobile || '',
+    customer_email: order.customer_email || '',
+    invoice_date:   new Date(),
+    items,
+    subtotal:       round2(subtotal),
+    gst_amount:     round2(gstTotal),
+    transport_cost: Number(order.transport_cost) || 0,
+    packing_cost:   Number(order.packing_cost) || 0,
+    discount:       Number(order.discount) || 0,
+    grand_total,
+    status:         'Unpaid',
+    created_by:     req.user._id,
+  });
+
+  // Reflect on the order.
+  await Order.updateOne({ _id: order._id }, { invoice_id: invoice._id, invoice_no }).catch(() => {});
+
+  await Notification.create({
+    company_id:   req.user.company_id,
+    type:         'invoice',
+    title:        `Invoice ${invoice_no} generated`,
+    message:      `GST invoice for order ${order.order_code} — ₹${grand_total.toLocaleString('en-IN')}`,
+    reference_id: invoice._id,
+  }).catch(() => {});
+
+  sendSuccess(res, invoice, 'GST invoice generated.', 201);
+}
+
 module.exports = {
   listOrders, getTransitions, getOrder, getNextStatuses,
   createOrderFromEnquiry, createOrder,
   updateOrderStatus, updateOrder, deleteOrder, packOrder,
-  assignOrder, claimOrder,
+  assignOrder, claimOrder, generateOrderInvoice,
 };

@@ -35,6 +35,10 @@ const companySchema = new mongoose.Schema(
     state:             { type: String, default: '' },
     pin_code:          { type: String, default: '' },
     subscription_plan: { type: String, default: 'Free' },
+    // Enquiry quota driven by the subscription plan. 0 = unlimited.
+    enquiry_limit:     { type: Number, default: 0 },
+    enquiries_used:    { type: Number, default: 0 },
+    plan_expires_at:   { type: Date, default: null },
     status:            { type: String, enum: ['Pending', 'Approved', 'Rejected', 'Suspended'], default: 'Pending' },
     is_active:         { type: Boolean, default: true },
     reject_reason:     { type: String, default: '' },
