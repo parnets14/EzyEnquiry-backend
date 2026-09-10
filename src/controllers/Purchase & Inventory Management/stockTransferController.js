@@ -75,18 +75,18 @@ async function createStockTransfer(req, res) {
 
   const qty = parseFloat(quantity);
 
-  // Deduct from source warehouse
+  // Deduct from source warehouse — available first, then physical
   await Inventory.findOneAndUpdate(
     { product_id, warehouse_id: from_warehouse },
-    { $inc: { stock_out: qty, current_stock: -qty } }
+    { $inc: { stock_out: qty, current_stock: -qty, physical_stock: -qty, available_stock: -qty } }
   );
 
-  // Add to destination warehouse
+  // Add to destination warehouse — upsert if no record exists yet
   await Inventory.findOneAndUpdate(
     { product_id, warehouse_id: to_warehouse },
     {
       $setOnInsert: { company_id: req.user.company_id },
-      $inc: { stock_in: qty, current_stock: qty },
+      $inc: { stock_in: qty, current_stock: qty, physical_stock: qty, available_stock: qty },
     },
     { upsert: true, new: true }
   );
@@ -119,11 +119,11 @@ async function updateTransferStatus(req, res) {
     const qty = parseFloat(transfer.quantity);
     await Inventory.findOneAndUpdate(
       { product_id: transfer.product_id, warehouse_id: transfer.from_warehouse },
-      { $inc: { stock_out: -qty, current_stock: qty } }
+      { $inc: { stock_out: -qty, current_stock: qty, physical_stock: qty, available_stock: qty } }
     );
     await Inventory.findOneAndUpdate(
       { product_id: transfer.product_id, warehouse_id: transfer.to_warehouse },
-      { $inc: { stock_in: -qty, current_stock: -qty } }
+      { $inc: { stock_in: -qty, current_stock: -qty, physical_stock: -qty, available_stock: -qty } }
     );
   }
 

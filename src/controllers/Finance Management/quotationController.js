@@ -98,6 +98,13 @@ async function fanOutAcceptedQuotation(quotation, req) {
       updated_by_role: req.user.role || 'Admin', remarks: `Created from quotation ${quotation.quotation_no}`, timestamp: new Date(),
     }],
     notes: `Auto-created from accepted quotation ${quotation.quotation_no}`,
+    // Auto-assign to the staff member who created the quotation
+    ...(quotation.created_by_type === 'Staff App' && quotation.created_by ? {
+      assigned_to:      quotation.created_by,
+      assigned_to_name: quotation.created_by_name || '',
+      assigned_date:    new Date(),
+      assignment_type:  'AUTO',
+    } : {}),
   });
 
   // ── Purchase (admin procurement record) ──
@@ -179,7 +186,7 @@ async function fanOutAcceptedQuotation(quotation, req) {
 
 /** GET /api/quotations */
 async function listQuotations(req, res) {
-  const { search, status, page = 1, limit = 200 } = req.query;
+  const { search, status, customer_id, page = 1, limit = 200 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   // Build query:
@@ -189,7 +196,11 @@ async function listQuotations(req, res) {
   //   AND created_by = req.user._id OR created_by_type = 'Staff App')
   let query;
 
-  if (req.isStaffApp) {
+  if (req.isStaffApp && customer_id) {
+    // Customer-scoped view (customer detail screen): show the FULL history for
+    // this customer within the company, regardless of who created each record.
+    query = { company_id: req.user.company_id, customer_id };
+  } else if (req.isStaffApp) {
     // Staff sees quotations THEY created
     query = {
       company_id:      req.user.company_id,
@@ -321,7 +332,9 @@ async function createQuotation(req, res) {
     status:          'draft',
     created_by:      req.user._id,
     created_by_name: body.created_by_name || req.user.name || '',
-    created_by_type: body.created_by_type || 'Admin',
+    created_by_type: body.created_by_type || (req.isStaffApp ? 'Staff App' : 'Admin'),
+    // source mirrors created_by_type so the frontend badge shows correctly
+    source: body.source || body.created_by_type || (req.isStaffApp ? 'Staff App' : '') || (body.buyer_company_id ? 'Retailer App' : ''),
   });
   sendSuccess(res, q, 'Quotation created.', 201);
 }

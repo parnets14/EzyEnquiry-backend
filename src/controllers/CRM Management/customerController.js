@@ -12,7 +12,9 @@ async function listCustomers(req, res) {
 
   const query = { company_id: req.user.company_id };
 
-  // Staff App: only show customers linked to assigned orders.
+  // Staff App: show customers that are either:
+  //   a) linked to orders assigned to this staff member (by mobile/name match), OR
+  //   b) directly created by this staff member
   // Pass ?scope=all to bypass this (used by quotation form to show all customers).
   if (req.isStaffApp && scope !== 'all') {
     const assignedOrders = await Order.find(
@@ -20,16 +22,17 @@ async function listCustomers(req, res) {
       { customer_name: 1, customer_mobile: 1 }
     ).lean();
 
-    if (assignedOrders.length === 0) {
-      return sendSuccess(res, { customers: [], pagination: { total: 0, page: 1, limit: parseInt(limit) } });
-    }
-
     const mobiles = [...new Set(assignedOrders.map(o => o.customer_mobile).filter(Boolean))];
     const names   = [...new Set(assignedOrders.map(o => o.customer_name).filter(Boolean))];
-    query.$or = [
-      ...(mobiles.length ? [{ mobile: { $in: mobiles } }] : []),
-      ...(names.length   ? [{ name:   { $in: names   } }] : []),
+
+    // Build OR conditions: customers from assigned orders + customers this staff created
+    const orConditions = [
+      { created_by: req.user._id },   // created by this staff member
     ];
+    if (mobiles.length) orConditions.push({ mobile: { $in: mobiles } });
+    if (names.length)   orConditions.push({ name:   { $in: names   } });
+
+    query.$or = orConditions;
   }
 
   if (search) {

@@ -246,7 +246,20 @@ async function getProduct(req, res) {
     .populate('sub_category_id', 'name')
     .lean()
   if (!product) return sendError(res, 'Product not found.', 404)
-  sendSuccess(res, product)
+
+  // Attach per-warehouse inventory breakdown
+  const inventoryRecords = await Inventory.find({ product_id: product._id })
+    .populate('warehouse_id', 'name city')
+    .lean()
+  const totalStock = inventoryRecords.reduce((acc, inv) => {
+    acc.available_stock += inv.available_stock || 0
+    acc.physical_stock  += inv.physical_stock  || 0
+    acc.reserved_stock  += inv.reserved_stock  || 0
+    acc.current_stock   += inv.current_stock   || 0
+    return acc
+  }, { available_stock: 0, physical_stock: 0, reserved_stock: 0, current_stock: 0 })
+
+  sendSuccess(res, { ...product, ...totalStock, inventory: inventoryRecords })
 }
 
 /** POST /api/products */
@@ -335,46 +348,61 @@ async function createProduct(req, res) {
     status: 'active',
   }
 
-  const inventoryData = product => ({
-    company_id: req.user.company_id,
-    product_id: product._id,
-    warehouse_id: openingWarehouse._id,
-    stock_in: openingStock,
-    stock_out: 0,
-    current_stock: openingStock,
+  // Always create an Inventory record, even when opening_stock = 0.
+  // A zero-stock stub means the product appears in Inventory Management
+  // from day one and can receive stock via purchases or adjustments.
+  const inventoryData = (product, warehouseId) => ({
+    company_id:      req.user.company_id,
+    product_id:      product._id,
+    warehouse_id:    warehouseId || null,
+    physical_stock:  openingStock,
+    available_stock: openingStock,
+    stock_in:        openingStock,
+    stock_out:       0,
+    current_stock:   openingStock,
     low_stock_alert: product.min_stock_level || 0,
+    reorder_level:   product.reorder_level   || 0,
+    purchase_rate:   product.purchase_price  || 0,
   })
+
+  // Resolve the default warehouse for zero-stock products — use any active warehouse
+  // belonging to this company so the record has a home from the start.
+  let defaultWarehouseId = openingWarehouse?._id || null
+  if (!defaultWarehouseId) {
+    const anyWarehouse = await Warehouse.findOne({
+      company_id: req.user.company_id,
+      is_active:  true,
+    }).select('_id').lean().catch(() => null)
+    defaultWarehouseId = anyWarehouse?._id || null
+  }
 
   let product
   let openingInventory = null
 
-  if (openingStock === 0) {
-    product = await Product.create(productData)
-  } else {
-    const session = await mongoose.startSession()
-    try {
-      await session.withTransaction(async () => {
-        ;[product] = await Product.create([productData], { session })
-        ;[openingInventory] = await Inventory.create([inventoryData(product)], { session })
-      })
-    } catch (error) {
-      const transactionUnsupported = error?.code === 20 ||
-        error?.codeName === 'IllegalOperation' ||
-        /transaction numbers are only allowed|transactions are not supported/i.test(error?.message || '')
-      if (!transactionUnsupported) throw error
+  const session = await mongoose.startSession()
+  try {
+    await session.withTransaction(async () => {
+      ;[product] = await Product.create([productData], { session })
+      // Always create an Inventory stub — zero stock is fine, shows in inventory page
+      ;[openingInventory] = await Inventory.create([inventoryData(product, defaultWarehouseId)], { session })
+    })
+  } catch (error) {
+    const transactionUnsupported = error?.code === 20 ||
+      error?.codeName === 'IllegalOperation' ||
+      /transaction numbers are only allowed|transactions are not supported/i.test(error?.message || '')
+    if (!transactionUnsupported) throw error
 
-      // Standalone MongoDB deployments cannot run transactions. Keep the two
-      // writes all-or-nothing by removing the new product if Inventory fails.
-      product = await Product.create(productData)
-      try {
-        openingInventory = await Inventory.create(inventoryData(product))
-      } catch (inventoryError) {
-        await Product.deleteOne({ _id: product._id, company_id: req.user.company_id }).catch(() => {})
-        throw inventoryError
-      }
-    } finally {
-      await session.endSession()
+    // Standalone MongoDB — run writes sequentially without a session
+    product = await Product.create(productData)
+    try {
+      openingInventory = await Inventory.create(inventoryData(product, defaultWarehouseId))
+    } catch (inventoryError) {
+      // Inventory stub creation is non-fatal — log but don't roll back the product
+      console.warn(`[createProduct] Inventory stub creation failed for ${product._id}:`, inventoryError.message)
+      openingInventory = null
     }
+  } finally {
+    await session.endSession()
   }
 
   const responseProduct = product.toObject ? product.toObject() : product
@@ -565,7 +593,54 @@ async function checkProductTransactions(req, res) {
   sendSuccess(res, { hasTransactions })
 }
 
+/**
+ * GET /api/products/for-select
+ * Lightweight product list for dropdowns (quotation / invoice item selection).
+ * Only requires authenticate — no moduleAccess guard.
+ * Super Admin gets all products across all companies.
+ * Company users get their own company's products.
+ */
+async function productsForSelect(req, res) {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit, 10) || 500, 1000)
+    const search = String(req.query.search || '').trim()
+    const isSuperAdmin = req.user?.role === 'Super Admin'
+
+    const query = { status: { $ne: 'deleted' } }
+    // Scope to company unless Super Admin
+    if (!isSuperAdmin) {
+      if (!req.user?.company_id) return sendSuccess(res, { products: [] })
+      query.company_id = req.user.company_id
+    }
+    if (search) {
+      const rx = new RegExp(escapeRegex(search), 'i')
+      query.$or = [{ name: rx }, { code: rx }]
+    }
+
+    const products = await Product.find(query)
+      .select('name code unit gst_percent mrp retail_price dealer_price purchase_price pcs_per_box sqft_per_box brand_name category_name sub_category_name size finish tile_type grade color hsn_code image_urls is_active company_id')
+      .populate('brand_id',        'name')
+      .populate('category_id',     'name')
+      .populate('sub_category_id', 'name')
+      .sort({ name: 1 })
+      .limit(limit)
+      .lean()
+
+    const shaped = products.map(p => ({
+      ...p,
+      brand_name:        p.brand_name        || p.brand_id?.name        || '',
+      category_name:     p.category_name     || p.category_id?.name     || '',
+      sub_category_name: p.sub_category_name || p.sub_category_id?.name || '',
+    }))
+
+    sendSuccess(res, { products: shaped })
+  } catch (err) {
+    sendError(res, err.message || 'Failed to fetch products', 500)
+  }
+}
+
 module.exports = {
+  productsForSelect,
   listProducts, listAllProducts, getCompanyTaxonomy, getProductTaxonomy, getProduct, createProduct, updateProduct, deleteProduct,
   searchProducts, getRecycleBin, restoreProduct, checkProductTransactions,
 }

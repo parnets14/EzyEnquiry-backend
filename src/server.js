@@ -15,6 +15,7 @@ const { MODULES, moduleAccess } = require('./config/permissions')
 // ── Utils ────────────────────────────────────────────────────
 const { logger }                     = require('./utils/logger')
 const { seedSuperAdmin, healOrphanUsers } = require('./utils/seeder')
+const { migrateInventoryBuckets }        = require('./utils/migrateInventory')
 
 // ── Middleware ───────────────────────────────────────────────
 const { errorHandler }       = require('./middleware/errorHandler')
@@ -122,6 +123,21 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), service: 'EzyEnquiry API' })
 })
 
+// ── One-time inventory migration endpoint (dev only) ─────────
+// Hit GET /migrate-inventory from any browser tab to run the backfill.
+// Remove this route after the migration has been confirmed.
+app.get('/migrate-inventory', async (_req, res) => {
+  try {
+    const { migrateInventoryBuckets } = require('./utils/migrateInventory')
+    await migrateInventoryBuckets()
+    const Inventory = require('./models/Purchase & Inventory Management/Inventory')
+    const all = await Inventory.find({}).select('product_id current_stock available_stock physical_stock company_id').lean()
+    res.json({ success: true, message: 'Migration complete', records: all })
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message })
+  }
+})
+
 // ── Public KYC document viewer (token-signed, no auth header) ─
 // The signed token in the query string is the authorization; must be
 // registered BEFORE the authenticated /api/companies block below.
@@ -173,7 +189,8 @@ app.use('/api/users',         authenticate, requireCompany, moduleAccess(MODULES
 app.use('/api/categories',     authenticate, requireCompany, moduleAccess(MODULES.CATEGORIES), categoryRoutes)
 app.use('/api/sub-categories', authenticate, requireCompany, moduleAccess(MODULES.CATEGORIES), require('./routes/Product Management/subCategoryRoutes'))
 app.use('/api/brands',         authenticate, requireCompany, moduleAccess(MODULES.BRANDS), brandRoutes)
-app.use('/api/products',       authenticate, requireCompany, moduleAccess(MODULES.PRODUCTS), productRoutes)
+// Products: /for-select is unguarded (auth+company only); all other routes go through moduleAccess
+app.use('/api/products',       authenticate, requireCompany, productRoutes)
 app.use('/api/inventory',      authenticate, requireCompany, moduleAccess(MODULES.INVENTORY), inventoryRoutes)
 app.use('/api/warehouses',     authenticate, requireCompany, moduleAccess(MODULES.WAREHOUSES), warehouseRoutes)
 app.use('/api/suppliers',      authenticate, requireCompany, moduleAccess(MODULES.SUPPLIERS), supplierRoutes)
@@ -228,6 +245,7 @@ app.use(errorHandler)
 connectDB().then(async () => {
   await seedSuperAdmin()
   await healOrphanUsers()
+  await migrateInventoryBuckets()   // backfill physical_stock/available_stock on legacy records
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`✓ Server running on http://0.0.0.0:${PORT} [${process.env.NODE_ENV || 'development'}]`)

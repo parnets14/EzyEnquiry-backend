@@ -41,7 +41,16 @@ const paymentHistorySchema = new mongoose.Schema(
     payment_mode:   { type: String, enum: ['Cash', 'Bank Transfer', 'UPI', 'Cheque', 'Card', 'Other'], default: 'Cash' },
     reference_no:   { type: String, default: '' },
     note:           { type: String, default: '' },
-    received_by:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    received_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    received_by_name: { type: String, default: '' },
+    // Verification by Admin/Accounts
+    verification_status: { type: String, enum: ['Pending', 'OTP Sent', 'Verified', 'Rejected'], default: 'Pending' },
+    verified_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    verified_by_name: { type: String, default: '' },
+    verified_at:      { type: Date, default: null },
+    otp_sent_at:      { type: Date, default: null },
+    // Plaintext OTP shown to the collecting staff in their app (cleared on verify).
+    otp_code:         { type: String, default: '' },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

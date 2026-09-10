@@ -27,8 +27,20 @@ require('../../models/Purchase & Inventory Management/Warehouse');
 
 /** Populate and flatten an inventory document */
 function flattenInventory(d) {
+  // Backward-compat: old records only have current_stock set (pre-bucket migration).
+  // If available_stock is 0 but current_stock > 0, mirror current_stock into available_stock
+  // so the UI shows real numbers rather than always "Out of Stock".
+  const available = (d.available_stock || 0) > 0
+    ? d.available_stock
+    : (d.current_stock || 0);
+  const physical  = (d.physical_stock  || 0) > 0
+    ? d.physical_stock
+    : (d.current_stock || 0);
+
   return {
     ...d,
+    available_stock: available,
+    physical_stock:  physical,
     product_code:   d.product_id?.code              || '',
     product_name:   d.product_id?.name              || '',
     unit:           d.product_id?.unit              || '',
@@ -59,17 +71,31 @@ async function listInventory(req, res) {
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const query = { company_id: req.user.company_id };
+  // Super Admin has no company_id — skip the company filter to see all inventory
+  if (!req.user.company_id) delete query.company_id;
   if (warehouse_id) query.warehouse_id = warehouse_id;
 
   // Stock-status filter
   if (stock_status === 'available') query.available_stock = { $gt: 0 };
-  if (stock_status === 'low')       query.$expr = { $and: [
-    { $gt: ['$available_stock', 0] },
-    { $lte: ['$available_stock', '$low_stock_alert'] },
-  ]};
-  if (stock_status === 'out')       query.available_stock = 0;
-  if (stock_status === 'reserved')  query.reserved_stock  = { $gt: 0 };
-  if (stock_status === 'blocked')   query.blocked_stock   = { $gt: 0 };
+  if (stock_status === 'low') {
+    // Low stock: available > 0 but <= low_stock_alert — must use $and to combine with company_id
+    const lowExpr = {
+      $and: [
+        { $gt:  ['$available_stock', 0] },
+        { $gt:  ['$low_stock_alert', 0] },
+        { $lte: ['$available_stock', '$low_stock_alert'] },
+      ],
+    };
+    if (query.$expr) {
+      query.$and = [{ $expr: query.$expr }, { $expr: lowExpr }];
+      delete query.$expr;
+    } else {
+      query.$expr = lowExpr;
+    }
+  }
+  if (stock_status === 'out')      query.available_stock = 0;
+  if (stock_status === 'reserved') query.reserved_stock  = { $gt: 0 };
+  if (stock_status === 'blocked')  query.blocked_stock   = { $gt: 0 };
 
   const [total, docs] = await Promise.all([
     Inventory.countDocuments(query),
@@ -102,14 +128,17 @@ async function listInventory(req, res) {
   // Filter out docs where product_id is null (didn't match the populate match)
   const inventory = docs.filter(d => d.product_id).map(flattenInventory);
 
-  sendSuccess(res, { inventory, pagination: paginate(inventory.length, parseInt(page), parseInt(limit)) });
+  sendSuccess(res, { inventory, pagination: paginate(total, parseInt(page), parseInt(limit)) });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/inventory/:id
 // ─────────────────────────────────────────────────────────────────────────────
 async function getInventoryItem(req, res) {
-  const doc = await Inventory.findOne({ _id: req.params.id, company_id: req.user.company_id })
+  const scope = { _id: req.params.id };
+  if (req.user.company_id) scope.company_id = req.user.company_id;
+
+  const doc = await Inventory.findOne(scope)
     .populate({
       path: 'product_id',
       select: 'code name unit brand_id category_id design size finish images',
@@ -123,11 +152,13 @@ async function getInventoryItem(req, res) {
 
   if (!doc) return sendError(res, 'Inventory record not found.', 404);
 
-  const movements = await StockMovement.find({
+  const movQuery = {
     product_id:   doc.product_id?._id,
     warehouse_id: doc.warehouse_id?._id || doc.warehouse_id,
-    company_id:   req.user.company_id,
-  })
+  };
+  if (req.user.company_id) movQuery.company_id = req.user.company_id;
+
+  const movements = await StockMovement.find(movQuery)
     .sort({ movement_date: -1 })
     .limit(20)
     .lean();
@@ -140,39 +171,50 @@ async function getInventoryItem(req, res) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function getInventorySummary(req, res) {
   const cid = req.user.company_id;
+  // Super Admin (no company_id) gets aggregate across all companies
+  const matchStage = cid
+    ? { $match: { company_id: new mongoose.Types.ObjectId(cid.toString()) } }
+    : { $match: {} };
+  const cidFilter = cid || null;
 
   const [agg, lowCount, outCount] = await Promise.all([
     Inventory.aggregate([
-      { $match: { company_id: new mongoose.Types.ObjectId(cid.toString()) } },
+      matchStage,
       {
         $group: {
           _id:               null,
           total_products:    { $sum: 1 },
-          total_physical:    { $sum: '$physical_stock' },
-          total_available:   { $sum: '$available_stock' },
+          // Use $max of available_stock and current_stock for backward-compat with pre-bucket records
+          total_physical:    { $sum: { $max: ['$physical_stock',  '$current_stock'] } },
+          total_available:   { $sum: { $max: ['$available_stock', '$current_stock'] } },
           total_reserved:    { $sum: '$reserved_stock' },
           total_picking:     { $sum: '$picking_stock' },
           total_packed:      { $sum: '$packed_stock' },
           total_blocked:     { $sum: '$blocked_stock' },
           total_dispatched:  { $sum: '$dispatched_qty' },
-          total_stock_value: { $sum: { $multiply: ['$available_stock', '$purchase_rate'] } },
+          total_stock_value: { $sum: { $multiply: [{ $max: ['$available_stock', '$current_stock'] }, '$purchase_rate'] } },
         },
       },
     ]),
 
-    // Low stock: available > 0 but <= low_stock_alert
+    // Low stock: available (or current_stock for old records) > 0 but <= low_stock_alert
     Inventory.countDocuments({
-      company_id: cid,
+      ...(cidFilter ? { company_id: cidFilter } : {}),
       $expr: {
         $and: [
-          { $gt: ['$available_stock', 0] },
-          { $lte: ['$available_stock', '$low_stock_alert'] },
+          { $gt: [{ $max: ['$available_stock', '$current_stock'] }, 0] },
+          { $gt: ['$low_stock_alert', 0] },
+          { $lte: [{ $max: ['$available_stock', '$current_stock'] }, '$low_stock_alert'] },
         ],
       },
     }),
 
-    // Out of stock: available = 0
-    Inventory.countDocuments({ company_id: cid, available_stock: 0 }),
+    // Out of stock: both available_stock and current_stock are 0
+    Inventory.countDocuments({
+      ...(cidFilter ? { company_id: cidFilter } : {}),
+      available_stock: 0,
+      current_stock:   0,
+    }),
   ]);
 
   const summary = agg[0] || {
@@ -538,7 +580,8 @@ async function listMovements(req, res) {
   const { product_id, warehouse_id, movement_type, from_date, to_date, page = 1, limit = 50 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
-  const query = { company_id: req.user.company_id };
+  const query = {};
+  if (req.user.company_id) query.company_id = req.user.company_id;
   if (product_id)    query.product_id    = product_id;
   if (warehouse_id)  query.warehouse_id  = warehouse_id;
   if (movement_type) query.movement_type = movement_type;

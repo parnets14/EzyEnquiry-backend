@@ -37,23 +37,31 @@ const CATALOG_PRODUCT_QUERY = {
   status: { $ne: 'deleted' },
 }
 
+// Maps every backend order status → the 6-stage status the Retailer App expects.
+// Legacy strings are kept so that old DB records still render correctly.
 const ANDROID_STATUS = {
-  New: 'New',
-  'Pending Approval': 'Accepted',
-  Approved: 'Accepted',
-  'Picking Started': 'Processing',
-  'Picking Completed': 'Processing',
-  'Sorting Started': 'Processing',
-  'Sorting Completed': 'Processing',
-  'Packing Started': 'Processing',
-  'Packing Completed': 'Processing',
-  'Invoice Generated': 'Processing',
-  'Ready for Dispatch': 'ReadyForDispatch',
+  // Current 6-stage statuses (pass through)
+  New:               'New',
+  Accepted:          'Accepted',
+  Packing:           'Packing',
+  Dispatched:        'Dispatched',
+  'Out for Delivery':'Out for Delivery',
+  Delivered:         'Delivered',
+  Cancelled:         'Cancelled',
+  // Legacy backward-compat
+  'Pending Approval':     'Accepted',
+  Approved:               'Accepted',
+  'Picking Started':      'Packing',
+  'Picking Completed':    'Packing',
+  'Sorting Started':      'Packing',
+  'Sorting Completed':    'Packing',
+  'Packing Started':      'Packing',
+  'Packing Completed':    'Packing',
+  'Invoice Generated':    'Packing',
+  'Ready for Dispatch':   'Dispatched',
+  Ready:                  'Dispatched',
   'Partially Dispatched': 'Dispatched',
-  Dispatched: 'Dispatched',
-  'In Transit': 'InTransit',
-  Delivered: 'Delivered',
-  Cancelled: 'Cancelled',
+  'In Transit':           'Out for Delivery',
 }
 
 const STATUS_GROUPS = Object.entries(ANDROID_STATUS).reduce((groups, [internal, external]) => {
@@ -289,7 +297,7 @@ function orderResponse(order) {
     enquiry_id: order.enquiry_id,
     enquiry_code: order.enquiry_code || '',
     offer_id: order.offer_id,
-    status: ANDROID_STATUS[order.status] || 'Processing',
+    status: ANDROID_STATUS[order.status] || 'Packing',
     internal_status: order.status,
     product: {
       id: order.product_id?._id || order.product_id || null,
@@ -328,7 +336,7 @@ function orderResponse(order) {
     invoice_number: order.invoice_number || '',
     invoice_date: order.invoice_date,
     status_history: (order.status_history || []).map(item => ({
-      status: ANDROID_STATUS[item.status] || 'Processing',
+      status: ANDROID_STATUS[item.status] || 'Packing',
       internal_status: item.status,
       remarks: item.remarks || '',
       timestamp: item.timestamp,
@@ -385,7 +393,7 @@ async function dashboard(req, res) {
     Enquiry.countDocuments(buyerEnquiryQuery(req)),
     Order.countDocuments(orderScope),
     Order.countDocuments({ ...orderScope, status: 'Delivered' }),
-    Order.countDocuments({ ...orderScope, status: { $in: ['New', 'Pending Approval', 'Approved', 'Picking Started', 'Picking Completed', 'Sorting Started', 'Sorting Completed', 'Packing Started', 'Packing Completed', 'Invoice Generated', 'Ready for Dispatch', 'Partially Dispatched', 'Dispatched', 'In Transit'] } }),
+    Order.countDocuments({ ...orderScope, status: { $nin: ['Delivered', 'Cancelled'] } }),
     Notification.countDocuments({ company_id: req.user.company_id, user_id: req.user._id, is_read: false }),
     Order.find(orderScope).select('-purchase_rate -purchase_cost -warehouse_status').populate('seller_company_id', 'name city state').populate('product_id', 'code name image_urls').sort({ created_at: -1 }).limit(5).lean(),
     invoiceOrderIds.length
@@ -1275,7 +1283,10 @@ async function getOrder(req, res) {
 }
 
 async function cancelOrder(req, res) {
-  const cancellable = ['New', 'Pending Approval', 'Approved']
+  // Orders can only be cancelled before packing starts.
+  // Legacy statuses included for backward-compat with existing DB records.
+  const cancellable = ['New', 'Accepted', 'Packing',
+    'Pending Approval', 'Approved']
   const history = {
     status: 'Cancelled', updated_by: req.user._id, updated_by_name: req.user.name || '',
     updated_by_role: 'Retailer', remarks: String(req.body.reason || 'Cancelled by retailer').slice(0, 500), timestamp: new Date(),
@@ -1326,13 +1337,13 @@ async function tracking(req, res) {
   return ok(res, {
     order_id: order._id,
     order_code: order.order_code,
-    status: ANDROID_STATUS[order.status] || 'Processing',
+    status: ANDROID_STATUS[order.status] || 'Packing',
     internal_status: order.status,
     ordered_qty: order.qty || 0,
     dispatched_qty: order.dispatched_qty || 0,
     remaining_qty: Math.max(0, (order.qty || 0) - (order.dispatched_qty || 0)),
     unit: order.unit || '',
-    history: (order.status_history || []).map(item => ({ status: ANDROID_STATUS[item.status] || 'Processing', internal_status: item.status, remarks: item.remarks || '', timestamp: item.timestamp })),
+    history: (order.status_history || []).map(item => ({ status: ANDROID_STATUS[item.status] || 'Packing', internal_status: item.status, remarks: item.remarks || '', timestamp: item.timestamp })),
     dispatch: latest ? shapeDispatch(latest) : null,
     dispatches: allDispatches.map(shapeDispatch),
     capabilities: { live_gps_tracking: false },

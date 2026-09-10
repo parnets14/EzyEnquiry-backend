@@ -124,7 +124,7 @@ async function listDispatches(req, res) {
   const [total, dispatches] = await Promise.all([
     Dispatch.countDocuments(query),
     Dispatch.find(query)
-      .populate('order_id', 'order_code product_name product_id qty total_amount branch_name enquiry_code invoice_number delivery_address location warehouse_id')
+      .populate('order_id', 'order_code customer_name product_name product_id unit qty rate total_amount branch_name enquiry_code invoice_number delivery_address location warehouse_id')
       .sort({ created_at: -1 })
       .skip(offset)
       .limit(parseInt(limit))
@@ -161,10 +161,12 @@ async function createDispatch(req, res) {
   const order = await Order.findOne({ _id: order_id, company_id: req.user.company_id }).lean();
   if (!order) return sendError(res, 'Order not found.', 404);
 
-  // Only allow dispatch when order is Ready for Dispatch (strict) or Packing Completed (relaxed)
-  const dispatchableStatuses = ['Ready for Dispatch', 'Packing Completed', 'Invoice Generated', 'Approved', 'Picking Completed', 'Packing Started'];
+  // Only allow dispatch when order is in a dispatchable state
+  const dispatchableStatuses = ['Accepted', 'Packing', 'Dispatched',
+    // legacy backward-compat
+    'Ready', 'Ready for Dispatch', 'Packing Completed', 'Invoice Generated', 'Approved', 'Picking Completed', 'Packing Started'];
   if (!dispatchableStatuses.includes(order.status)) {
-    return sendError(res, `Order status must be "Ready for Dispatch". Current: "${order.status}"`, 422);
+    return sendError(res, `Order must be in "Packing" or "Accepted" state to dispatch. Current: "${order.status}"`, 422);
   }
 
   // Prevent duplicate dispatch
@@ -199,10 +201,11 @@ async function createDispatch(req, res) {
   // ── STOCK OUT: packed → dispatched, physical_stock ↓ ────────────────────
   await performStockOut(req.user.company_id, order, dispatch._id, dispatch_code, req.user._id);
 
-  // Update order → Dispatched
+  // Update order → Dispatched (stage 4) + save expected_delivery
   await Order.findByIdAndUpdate(order_id, {
     dispatch_id: dispatch._id,
     status:      'Dispatched',
+    ...(expected_delivery ? { expected_delivery } : {}),
     $push: {
       status_history: {
         status:          'Dispatched',
@@ -248,20 +251,25 @@ async function markInTransit(req, res) {
 
   const orderId = dispatch.order_id?._id || dispatch.order_id;
   if (orderId) {
-    await Order.findByIdAndUpdate(orderId, {
-      status: 'In Transit',
-      $push: {
+    // Guard: only push if the last status_history entry isn't already 'Out for Delivery'
+    const existingOrder = await Order.findById(orderId).select('status_history').lean();
+    const lastEntry = existingOrder?.status_history?.slice(-1)[0];
+    const updates = { status: 'Out for Delivery' };
+    if (!lastEntry || lastEntry.status !== 'Out for Delivery') {
+      updates.$push = {
         status_history: {
-          status:          'In Transit',
+          status:          'Out for Delivery',
           updated_by:      req.user._id,
           updated_by_name: req.user.name || 'Dispatch',
-          remarks:         'Shipment in transit',
+          updated_by_role: req.user.role || '',
+          remarks:         'Shipment out for delivery',
           timestamp:       new Date(),
         },
-      },
-    });
+      };
+    }
+    await Order.findByIdAndUpdate(orderId, updates);
   }
-  sendSuccess(res, dispatch, 'Marked as In Transit.');
+  sendSuccess(res, dispatch, 'Marked as Out for Delivery.');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,20 +292,21 @@ async function markDelivered(req, res) {
     : null;
 
   if (order) {
-    // Update order status
-    await Order.findByIdAndUpdate(order._id, {
-      status:         'Delivered',
-      delivered_date,
-      $push: {
+    // Update order status — guard against duplicate status_history entries
+    const lastEntry = order.status_history?.slice(-1)[0];
+    const deliveredUpdates = { status: 'Delivered', delivered_date };
+    if (!lastEntry || lastEntry.status !== 'Delivered') {      deliveredUpdates.$push = {
         status_history: {
           status:          'Delivered',
           updated_by:      req.user._id,
           updated_by_name: req.user.name || 'Delivery',
+          updated_by_role: req.user.role || '',
           remarks:         req.body.pod_remarks || 'Delivered',
           timestamp:       new Date(),
         },
-      },
-    });
+      };
+    }
+    await Order.findByIdAndUpdate(order._id, deliveredUpdates);
 
     // Auto-create Sale if not already done (idempotent)
     const existingSale = await Sale.findOne({ order_id: order._id }).lean();

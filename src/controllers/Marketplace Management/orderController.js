@@ -6,49 +6,51 @@ const Invoice      = require('../../models/Finance Management/Invoice');
 const Dispatch     = require('../../models/Marketplace Management/Dispatch');
 const Company      = require('../../models/Company Management/Company');
 const User         = require('../../models/User Management/User');
+const Inventory    = require('../../models/Purchase & Inventory Management/Inventory');
+const StockMovement = require('../../models/Purchase & Inventory Management/StockMovement');
 const { notifyRetailer } = require('../../utils/pushHelper');
 
 const round2 = n => Math.round((Number(n) || 0) * 100) / 100;
 
+// ─── Unified 6-stage order lifecycle ────────────────────────────────────────
+// New → Accepted → Packing → Dispatched → Out for Delivery → Delivered
+// ─────────────────────────────────────────────────────────────────────────────
 const ORDER_STATUSES = [
-  'New', 'Pending Approval', 'Approved',
-  'Picking Started', 'Picking Completed',
-  'Sorting Started', 'Sorting Completed',
-  'Packing Started', 'Packing Completed',
-  'Invoice Generated', 'Ready for Dispatch',
-  'Dispatched', 'In Transit', 'Delivered', 'Cancelled',
+  'New',
+  'Accepted',
+  'Packing',
+  'Dispatched',
+  'Out for Delivery',
+  'Delivered',
+  'Cancelled',
 ];
 
 const VALID_TRANSITIONS = {
-  'New':               ['Pending Approval', 'Cancelled'],
-  'Pending Approval':  ['Approved', 'Cancelled'],
-  'Approved':          ['Picking Started', 'Cancelled'],
-  'Picking Started':   ['Picking Completed', 'Cancelled'],
-  'Picking Completed': ['Sorting Started'],
-  'Sorting Started':   ['Sorting Completed'],
-  'Sorting Completed': ['Packing Started'],
-  'Packing Started':   ['Packing Completed'],
-  'Packing Completed': ['Invoice Generated'],
-  'Invoice Generated': ['Ready for Dispatch'],
-  'Ready for Dispatch':['Dispatched'],
-  'Dispatched':        ['In Transit'],
-  'In Transit':        ['Delivered'],
-  'Delivered':         [],
-  'Cancelled':         [],
+  'New':             ['Accepted',   'Cancelled'],
+  'Accepted':        ['Packing',    'Cancelled'],
+  'Packing':         ['Dispatched', 'Cancelled'],
+  'Dispatched':      ['Out for Delivery'],
+  'Out for Delivery':['Delivered'],
+  'Delivered':       [],
+  'Cancelled':       [],
 };
 
 const ORDER_MANAGERS = ['Wholesaler', 'Manager', 'Company Owner', 'Super Admin', 'Sales Executive', 'Warehouse Staff', 'Accountant'];
 
 /** GET /api/orders  AND  GET /api/staff/orders */
 async function listOrders(req, res) {
-  const { status, search, page = 1, limit = 100 } = req.query;
+  const { status, search, customer_id, page = 1, limit = 100 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const query = { company_id: req.user.company_id };
 
   // When called from the Staff App (/api/staff/orders), only return
-  // orders that are explicitly assigned to the logged-in staff user.
-  if (req.isStaffApp) {
+  // orders that are explicitly assigned to the logged-in staff user —
+  // UNLESS a customer_id is given (customer detail screen wants the FULL
+  // history for that customer, regardless of assignment).
+  if (req.isStaffApp && customer_id) {
+    query.customer_id = customer_id;
+  } else if (req.isStaffApp) {
     query.assigned_to = req.user._id;
   }
 
@@ -87,12 +89,52 @@ async function getTransitions(req, res) {
   sendSuccess(res, { statuses: ORDER_STATUSES, transitions: VALID_TRANSITIONS });
 }
 
-/** GET /api/orders/:id */
+/** GET /api/orders/:id  (enriched for Staff App) */
 async function getOrder(req, res) {
-  const order = await Order.findOne({ _id: req.params.id, company_id: req.user.company_id })
-    .populate('dispatch_id')
+  const param = req.params.id;
+  // Staff App passes order_code (e.g. ORD-2026-000782); admin passes MongoDB _id.
+  // Support both: try order_code first, then fall back to _id.
+  const mongoose = require('mongoose');
+  const isObjectId = mongoose.Types.ObjectId.isValid(param) && String(new mongoose.Types.ObjectId(param)) === param;
+  const query = isObjectId
+    ? { _id: param,          company_id: req.user.company_id }
+    : { order_code: param,   company_id: req.user.company_id };
+
+  const order = await Order.findOne(query)
+    .populate('assigned_to', 'name mobile email designation')
     .lean();
   if (!order) return sendError(res, 'Order not found.', 404);
+
+  // For the Staff App, attach all linked dispatches and invoices so the
+  // detail screen can render a complete picture without extra round-trips.
+  if (req.isStaffApp) {
+    const [dispatches, invoices] = await Promise.all([
+      Dispatch.find({ order_id: order._id, company_id: req.user.company_id })
+        .sort({ created_at: 1 })
+        .lean(),
+      Invoice.find({ order_id: order._id, company_id: req.user.company_id })
+        .sort({ created_at: 1 })
+        .lean(),
+    ]);
+
+    // Compute payment summary from invoices
+    const totalInvoiced = invoices.reduce((s, inv) => s + (inv.grand_total || 0), 0);
+    const totalPaid     = invoices.reduce((s, inv) => s + (inv.paid_amount  || 0), 0);
+    const totalBalance  = invoices.reduce((s, inv) => s + (inv.balance_due  != null ? inv.balance_due : (inv.grand_total || 0) - (inv.paid_amount || 0)), 0);
+
+    return sendSuccess(res, {
+      ...order,
+      _dispatches:     dispatches,
+      _invoices:       invoices,
+      _payment_summary: {
+        total_invoiced: totalInvoiced,
+        total_paid:     totalPaid,
+        total_balance:  totalBalance,
+        invoice_count:  invoices.length,
+      },
+    });
+  }
+
   sendSuccess(res, order);
 }
 
@@ -160,6 +202,13 @@ async function createOrderFromEnquiry(req, res) {
     created_by_name:  req.user.name || '',
     status:           'New',
     order_date:       new Date(),
+    // Auto-assign to the staff member who created the order via Staff App
+    ...(req.isStaffApp ? {
+      assigned_to:      req.user._id,
+      assigned_to_name: req.user.name || '',
+      assigned_date:    new Date(),
+      assignment_type:  'AUTO',
+    } : {}),
     status_history: [{
       status:          'New',
       updated_by_name: req.user.name || 'System',
@@ -238,6 +287,13 @@ async function createOrder(req, res) {
     order_date:      new Date(),
     created_by:      req.user._id,
     created_by_name: req.user.name || '',
+    // Auto-assign to the staff member who created the order via Staff App
+    ...(req.isStaffApp ? {
+      assigned_to:      req.user._id,
+      assigned_to_name: req.user.name || '',
+      assigned_date:    new Date(),
+      assignment_type:  'AUTO',
+    } : {}),
     status_history: [{
       status:          'New',
       updated_by_name: req.user.name || 'System',
@@ -278,18 +334,33 @@ async function updateOrderStatus(req, res) {
     return sendError(res, `Cannot transition from "${order.status}" to "${status}". Allowed: ${allowed.join(', ') || 'none'}`, 422);
   }
 
+  const STAGE_REMARKS = {
+    'Accepted':        'Order accepted',
+    'Packing':         'Packing started',
+    'Dispatched':      'Order dispatched',
+    'Out for Delivery':'Out for delivery',
+    'Delivered':       'Delivered',
+    'Cancelled':       'Order cancelled',
+  };
+
   const histEntry = {
     status,
     updated_by:      req.user._id,
     updated_by_name: req.user.name || '',
     updated_by_role: req.user.role || '',
-    remarks:         remarks || '',
+    remarks:         remarks || STAGE_REMARKS[status] || '',
     timestamp:       new Date(),
   };
 
+  // Guard: skip pushing a duplicate if the last history entry already has this status
+  const lastEntry = order.status_history?.slice(-1)[0];
+  const histUpdate = (lastEntry && lastEntry.status === status)
+    ? { status }
+    : { status, $push: { status_history: histEntry } };
+
   let updated = await Order.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },
-    { status, $push: { status_history: histEntry } },
+    histUpdate,
     { new: true }
   ).lean();
 
@@ -544,10 +615,66 @@ async function packOrder(req, res) {
     created_by: req.user._id,
   });
 
-  // 3) Update order counters + append package record + advance status
+  // 3a) STOCK OUT — deduct inventory for this packed quantity
+  // Uses the same bucket-draining logic as dispatchController.performStockOut.
+  if (order.product_id && packQty > 0) {
+    try {
+      const invFilter = { company_id: req.user.company_id, product_id: order.product_id };
+      if (order.warehouse_id) invFilter.warehouse_id = order.warehouse_id;
+      const inv = await Inventory.findOne(invFilter);
+      if (inv) {
+        const fromPacked    = Math.min(packQty, inv.packed_stock    || 0);
+        const rem1          = packQty - fromPacked;
+        const fromPicking   = Math.min(rem1,   inv.picking_stock   || 0);
+        const rem2          = rem1 - fromPicking;
+        const fromReserved  = Math.min(rem2,   inv.reserved_stock  || 0);
+        const rem3          = rem2 - fromReserved;
+        const fromAvailable = Math.min(rem3,   inv.available_stock || 0);
+        const prevPhysical  = inv.physical_stock || 0;
+        await Inventory.findByIdAndUpdate(inv._id, {
+          $inc: {
+            packed_stock:    -fromPacked,
+            picking_stock:   -fromPicking,
+            reserved_stock:  -fromReserved,
+            available_stock: -fromAvailable,
+            physical_stock:  -packQty,
+            current_stock:   -packQty,
+            dispatched_qty:  +packQty,
+            stock_out:       +packQty,
+          },
+        });
+        await StockMovement.create({
+          company_id:     req.user.company_id,
+          product_id:     order.product_id,
+          product_name:   order.product_name || '',
+          product_code:   order.product_code || '',
+          warehouse_id:   order.warehouse_id || inv.warehouse_id || null,
+          movement_type:  'Stock Out',
+          quantity:       packQty,
+          previous_stock: prevPhysical,
+          new_stock:      prevPhysical - packQty,
+          unit:           order.unit || '',
+          reference_type: 'Sale',
+          reference_id:   dispatch._id?.toString() || '',
+          invoice_number: dispatch_code || '',
+          notes:          `Pack ${packNo} dispatched — ${dispatch_code} / Order ${order.order_code || ''}`,
+          created_by:     req.user._id,
+          movement_date:  new Date(),
+        }).catch(e => console.error('[StockMovement] packOrder log failed:', e.message));
+      }
+    } catch (e) {
+      // Non-fatal — log and continue. Order dispatch must not fail due to inventory issues.
+      console.error('[packOrder] stock-out failed gracefully:', e.message);
+    }
+  }
+
+  // 3b) Update order counters + append package record + advance status
   const newDispatched = round2(alreadyShipped + packQty);
   const isFull = newDispatched >= orderedQty;
-  const newStatus = isFull ? 'Dispatched' : 'Partially Dispatched';
+  // Both full and partial dispatches move the order to 'Dispatched' (stage 4).
+  // Partial quantity is tracked via dispatched_qty vs qty — no need for a
+  // separate 'Partially Dispatched' status in the new 6-stage lifecycle.
+  const newStatus = 'Dispatched';
 
   order.packed_qty     = round2((Number(order.packed_qty) || 0) + packQty);
   order.dispatched_qty = newDispatched;
@@ -555,6 +682,8 @@ async function packOrder(req, res) {
   order.dispatch_id    = dispatch._id;        // latest dispatch
   order.invoice_number = invoice_no;          // latest invoice
   order.invoice_date   = new Date();
+  // Save expected_delivery onto the order so the Staff App can display it
+  if (expected_delivery) order.expected_delivery = expected_delivery;
   order.packages.push({
     pack_no:        packNo,
     qty:            packQty,
@@ -614,11 +743,6 @@ async function packOrder(req, res) {
   sendSuccess(res, { order: populated, invoice, dispatch }, isFull ? 'Order fully packed & dispatched.' : 'Partial pack dispatched.', 201);
 }
 
-module.exports = {
-  listOrders, getTransitions, getOrder, getNextStatuses,
-  createOrderFromEnquiry, createOrder,
-  updateOrderStatus, updateOrder, deleteOrder, packOrder,
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/orders/:id/assign - Assign order to staff
@@ -630,10 +754,20 @@ async function assignOrder(req, res) {
     return sendError(res, 'staff_id is required.');
   }
 
+  // Normalise: if the client accidentally sends a populated object, extract _id.
+  const resolvedStaffId =
+    typeof staff_id === 'object' && staff_id !== null
+      ? String(staff_id._id || staff_id)
+      : String(staff_id);
+
+  const mongoose = require('mongoose');
+  if (!mongoose.Types.ObjectId.isValid(resolvedStaffId)) {
+    return sendError(res, 'Invalid staff_id format.', 400);
+  }
+
   // Find the user by _id within the same company.
-  // Do NOT filter by role — staff users are created with role 'Sales Executive'.
   const staffUser = await User.findOne({
-    _id:        staff_id,
+    _id:        resolvedStaffId,
     company_id: req.user.company_id,
     is_active:  true,
   }).select('name role').lean();
@@ -645,7 +779,7 @@ async function assignOrder(req, res) {
   const order = await Order.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },
     {
-      assigned_to:      staff_id,
+      assigned_to:      resolvedStaffId,
       assigned_to_name: staffUser.name,
       assigned_date:    new Date(),
       assignment_type:  'MANUAL',
@@ -660,7 +794,7 @@ async function assignOrder(req, res) {
   // Notify the assigned staff member.
   await Notification.create({
     company_id:   req.user.company_id,
-    user_id:      staff_id,
+    user_id:      resolvedStaffId,
     type:         'order',
     title:        `Order ${order.order_code} Assigned`,
     message:      `You have been assigned to order ${order.order_code} for ${order.customer_name}`,

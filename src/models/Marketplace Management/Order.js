@@ -9,14 +9,22 @@ const historySchema = new mongoose.Schema({
   timestamp:       { type: Date, default: Date.now },
 }, { _id: false });
 
+// ─── Unified 6-stage lifecycle ───────────────────────────────────────────────
+// Legacy status strings are kept in the enum so that existing MongoDB documents
+// (written before this migration) continue to pass validation. All new orders
+// will only ever be written with the 6 canonical statuses.
 const ORDER_STATUSES = [
-  'New', 'Pending Approval', 'Approved',
+  // Current 6-stage canonical statuses
+  'New', 'Accepted', 'Packing', 'Dispatched', 'Out for Delivery', 'Delivered', 'Cancelled',
+  // Legacy statuses — backward-compat for existing DB records
+  'Pending Approval', 'Approved',
   'Picking Started', 'Picking Completed',
   'Sorting Started', 'Sorting Completed',
   'Packing Started', 'Packing Completed',
-  'Invoice Generated', 'Ready for Dispatch',
-  'Partially Dispatched',
-  'Dispatched', 'In Transit', 'Delivered', 'Cancelled',
+  'Invoice Generated', 'Ready for Dispatch', 'Ready',
+  'Partially Dispatched', 'In Transit',
+  // Special
+  'HOLD',
 ];
 
 // One partial packing batch: a slice of the order packed → invoiced → dispatched.
@@ -78,6 +86,7 @@ const orderSchema = new mongoose.Schema(
     invoice_number:   { type: String, default: '' },
     invoice_date:     { type: Date, default: null },
     dispatch_id:      { type: mongoose.Schema.Types.ObjectId, ref: 'Dispatch', default: null },
+    expected_delivery:{ type: Date, default: null },
     delivered_date:   { type: Date, default: null },
     // Partial fulfillment tracking
     packed_qty:       { type: Number, default: 0 },

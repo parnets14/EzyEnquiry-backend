@@ -35,11 +35,12 @@ router.get('/orders/:id', orderCtrl.getOrder);
 router.get('/dispatches',     dispatchCtrl.listDispatches);
 router.get('/dispatches/:id', dispatchCtrl.getDispatch);
 
-// ── Invoices (read + record payment) ─────────────────────────
-router.get ('/invoices',             invoiceCtrl.listInvoices);
-router.get ('/invoices/summary',     invoiceCtrl.getInvoiceSummary);
-router.get ('/invoices/:id',         invoiceCtrl.getInvoice);
-router.post('/invoices/:id/payment', invoiceCtrl.recordPayment);
+// ── Invoices (read + record payment + verify collection OTP) ─
+router.get ('/invoices',                              invoiceCtrl.listInvoices);
+router.get ('/invoices/summary',                      invoiceCtrl.getInvoiceSummary);
+router.get ('/invoices/:id',                          invoiceCtrl.getInvoice);
+router.post('/invoices/:id/payment',                  invoiceCtrl.recordPayment);
+router.post('/invoices/:id/payment/:phId/verify',     invoiceCtrl.verifyPayment);
 
 // ── Customers (list + create) ─────────────────────────────────
 router.get ('/customers',     customerCtrl.listCustomers);
