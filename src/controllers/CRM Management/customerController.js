@@ -102,6 +102,15 @@ async function createCustomer(req, res) {
   const { name, mobile } = req.body;
   if (!name || !mobile) return sendError(res, 'Name and mobile are required.');
 
+  // Resolve who created this customer. The source app tells us the type
+  // (Staff App / Retailer App / Admin); the name + mobile are taken from the
+  // authenticated user so they're accurate and can't be spoofed by the client.
+  const createdByType = req.isStaffApp
+    ? 'Staff App'
+    : (req.body.created_by_type || 'Admin');
+  const createdByName = req.user.name || req.body.created_by_name || '';
+  const createdByMobile = req.user.mobile || req.body.created_by_mobile || '';
+
   const customer = await Customer.create({
     company_id:   req.user.company_id,
     name,
@@ -114,9 +123,10 @@ async function createCustomer(req, res) {
     pincode:      req.body.pincode      || '',
     biz_type:     req.body.biz_type     || 'Retailer',
     credit_limit: req.body.credit_limit || 0,
-    created_by:      req.user._id || req.user.id || null,
-    created_by_name: req.body.created_by_name || req.user.name || '',
-    created_by_type: req.body.created_by_type || 'Admin',
+    created_by:        req.user._id || req.user.id || null,
+    created_by_name:   createdByName,
+    created_by_mobile: createdByMobile,
+    created_by_type:   createdByType,
   });
   sendSuccess(res, customer, 'Customer created.', 201);
 }

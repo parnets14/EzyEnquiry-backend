@@ -57,6 +57,14 @@ async function performStockOut(companyId, order, dispatchId, dispatchCode, userI
   const qty = parseFloat(order.qty) || 0;
   if (qty <= 0) return;
 
+  // If stock was already deducted at booking (order creation), do NOT reduce
+  // physical/available again — just advance the dispatched counter so we never
+  // double-deduct.
+  if (order.stock_deducted) {
+    await Inventory.findByIdAndUpdate(inv._id, { $inc: { dispatched_qty: +qty } });
+    return;
+  }
+
   // Determine how much to pull from each bucket
   const fromPacked    = Math.min(qty, inv.packed_stock   || 0);
   const remainder1    = qty - fromPacked;

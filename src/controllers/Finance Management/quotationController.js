@@ -7,7 +7,17 @@ const Notification = require('../../models/System Management/Notification');
 const User = require('../../models/User Management/User');
 const Enquiry = require('../../models/Marketplace Management/Enquiry');
 const Company = require('../../models/Company Management/Company');
+const Customer = require('../../models/CRM Management/Customer');
 const crypto = require('crypto');
+
+// Loose phone matcher — matches stored phones that contain the customer's last
+// 10 digits, so "+91 98765 43212" and "9876543212" both match.
+function phoneRegexFromMobile(mobile) {
+  const digits = String(mobile || '').replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  const last10 = digits.slice(-10);
+  return new RegExp(last10.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+}
 
 // Resolve the retailer/creator display name for a quotation. Prefers the stored
 // created_by_name; otherwise derives it from the buyer company (and creator user).
@@ -186,7 +196,7 @@ async function fanOutAcceptedQuotation(quotation, req) {
 
 /** GET /api/quotations */
 async function listQuotations(req, res) {
-  const { search, status, customer_id, page = 1, limit = 200 } = req.query;
+  const { search, status, customer_id, customer_mobile, page = 1, limit = 200 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   // Build query:
@@ -196,10 +206,29 @@ async function listQuotations(req, res) {
   //   AND created_by = req.user._id OR created_by_type = 'Staff App')
   let query;
 
-  if (req.isStaffApp && customer_id) {
+  if (req.isStaffApp && (customer_id || customer_mobile)) {
     // Customer-scoped view (customer detail screen): show the FULL history for
     // this customer within the company, regardless of who created each record.
-    query = { company_id: req.user.company_id, customer_id };
+    // A quotation may be linked directly (customer_id), via the buyer company
+    // (buyer_company_id, for retailer-origin quotations), or only by phone —
+    // match any of them. We resolve the authoritative mobile from the Customer
+    // record so client-side phone formatting differences don't cause a miss.
+    const custOr = [];
+    let resolvedMobile = customer_mobile;
+    if (customer_id) {
+      custOr.push({ customer_id }, { buyer_company_id: customer_id });
+      try {
+        const cust = await Customer.findOne(
+          { _id: customer_id, company_id: req.user.company_id },
+          { mobile: 1 }
+        ).lean();
+        if (cust?.mobile) resolvedMobile = cust.mobile;
+      } catch { /* fall back to client-supplied mobile */ }
+    }
+    const phoneRx = phoneRegexFromMobile(resolvedMobile);
+    if (phoneRx) custOr.push({ customer_phone: phoneRx });
+    query = { company_id: req.user.company_id, $or: custOr };
+    console.log(`[Staff Quotations] customer_id=${customer_id} mobile=${resolvedMobile} matchConditions=${custOr.length}`);
   } else if (req.isStaffApp) {
     // Staff sees quotations THEY created
     query = {
@@ -239,6 +268,9 @@ async function listQuotations(req, res) {
     Quotation.countDocuments(query),
     Quotation.find(query).sort({ created_at: -1 }).skip(offset).limit(parseInt(limit)).lean(),
   ]);
+  if (customer_id || customer_mobile) {
+    console.log(`[Staff Quotations] returning ${quotations.length}/${total} quotation(s) for customer_id=${customer_id}`);
+  }
   // Backfill the retailer/creator display name for rows that don't have it
   // stored (older quotations), deriving it from the buyer company.
   await Promise.all(quotations.map(async (q) => {

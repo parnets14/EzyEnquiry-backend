@@ -6,6 +6,9 @@ const transactionSchema = new mongoose.Schema(
     company_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     type:         { type: String, required: true }, // Received | Paid
     party_name:   { type: String, default: '' },
+    // Link to the party so ledgers can match reliably by id (not just name).
+    customer_id:  { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', default: null },
+    supplier_id:  { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', default: null },
     reference_id: { type: mongoose.Schema.Types.ObjectId, default: null },
     amount:       { type: Number, required: true },
     mode:         { type: String, default: 'Cash' },

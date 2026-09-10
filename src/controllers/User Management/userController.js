@@ -30,7 +30,7 @@ async function getUser(req, res) {
 
 /** POST /api/users */
 async function createUser(req, res) {
-  const { name, email, mobile, password, role } = req.body
+  const { name, email, mobile, password, role, permissions } = req.body
   if (!name || !email || !mobile || !password)
     return sendError(res, 'Name, email, mobile and password are required.')
   if (!VALID_ROLES.includes(role))
@@ -43,20 +43,34 @@ async function createUser(req, res) {
   if (emailExists || mobileExists)
     return sendError(res, 'User with this email or mobile already exists.', 409)
 
+  // Optional per-user permission overrides. Accept a plain object only.
+  const permsOverride = (permissions && typeof permissions === 'object' && !Array.isArray(permissions))
+    ? permissions
+    : null
+
   const password_hash = await bcrypt.hash(password, 12)
-  const user = await User.create({ company_id: req.user.company_id, name, email, mobile, password_hash, role })
+  const user = await User.create({
+    company_id: req.user.company_id, name, email, mobile, password_hash, role,
+    permissions: permsOverride,
+  })
   const { password_hash: _, ...safe } = user.toObject()
   sendSuccess(res, safe, 'User created.', 201)
 }
 
 /** PUT /api/users/:id */
 async function updateUser(req, res) {
-  const { name, mobile, role, is_active } = req.body
+  const { name, mobile, role, is_active, permissions } = req.body
   const update = {}
   if (name      !== undefined) update.name      = name
   if (mobile    !== undefined) update.mobile    = mobile
   if (role      !== undefined) update.role      = role
   if (is_active !== undefined) update.is_active = is_active
+  // Per-user permission overrides. Pass null to clear (revert to role defaults).
+  if (permissions !== undefined) {
+    update.permissions = (permissions && typeof permissions === 'object' && !Array.isArray(permissions))
+      ? permissions
+      : null
+  }
 
   const user = await User.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },

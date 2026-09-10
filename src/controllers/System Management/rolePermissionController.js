@@ -24,14 +24,28 @@ async function listRolePermissions(req, res) {
 /** GET /api/role-permissions/me — effective actions for current user. */
 async function myPermissions(req, res) {
   const { role, company_id: companyId } = req.user
-  const doc = companyId
-    ? await RolePermission.findOne({ company_id: companyId, role }).lean()
-    : null
+
+  // Per-user overrides take precedence over the role, when present.
+  const User = require('../../models/User Management/User')
+  const me = await User.findById(req.user._id).select('permissions').lean().catch(() => null)
+  const hasUserOverrides = me?.permissions && typeof me.permissions === 'object'
+    && !Array.isArray(me.permissions) && Object.keys(me.permissions).length > 0
+
+  let permissions
+  if (hasUserOverrides) {
+    // Merge the user's saved overrides over SOP defaults for this role.
+    permissions = effectivePermissions(role, me.permissions)
+  } else {
+    const doc = companyId
+      ? await RolePermission.findOne({ company_id: companyId, role }).lean()
+      : null
+    permissions = effectivePermissions(role, doc?.permissions)
+  }
 
   sendSuccess(res, {
     schema_version: 2,
     role,
-    permissions: effectivePermissions(role, doc?.permissions),
+    permissions,
     modules: MODULE_CATALOG,
   })
 }

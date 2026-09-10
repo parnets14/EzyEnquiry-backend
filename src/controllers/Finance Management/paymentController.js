@@ -81,6 +81,7 @@ async function collectReceivable(req, res) {
     company_id:   req.user.company_id,
     type:         'Received',
     party_name:   rcv.customer_name,
+    customer_id:  rcv.customer_id || null,   // link for reliable ledger matching
     reference_id: rcv._id,
     amount, mode, reference, notes,
     recorded_by:  req.user._id,
@@ -122,6 +123,7 @@ async function payPayable(req, res) {
     company_id:   req.user.company_id,
     type:         'Paid',
     party_name:   payable.supplier_name,
+    supplier_id:  payable.supplier_id || null,  // link for reliable ledger matching
     reference_id: payable._id,
     amount, mode, reference, notes,
     recorded_by:  req.user._id,

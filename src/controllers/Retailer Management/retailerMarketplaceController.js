@@ -10,6 +10,7 @@ const Enquiry = require('../../models/Marketplace Management/Enquiry')
 const EnquiryOffer = require('../../models/Marketplace Management/EnquiryOffer')
 const EnquiryMessage = require('../../models/Marketplace Management/EnquiryMessage')
 const Order = require('../../models/Marketplace Management/Order')
+const { deductStockForOrder, restoreStockForOrder } = require('../Purchase & Inventory Management/inventoryController')
 const Dispatch = require('../../models/Marketplace Management/Dispatch')
 const Invoice = require('../../models/Finance Management/Invoice')
 const Notification = require('../../models/System Management/Notification')
@@ -1246,6 +1247,10 @@ async function createOrder(req, res) {
     Notification.create({ company_id: req.user.company_id, user_id: req.user._id, type: 'order_created', title: `Order ${orderCode} created`, message: `Your order total is ₹${totalAmount}.`, reference_id: order._id }),
     Notification.create({ company_id: offer.seller_company_id, user_id: offer.seller_user_id, type: 'retailer_order', title: `New retailer order ${orderCode}`, message: `${req.company.name} placed an order from ${enquiry.enq_code}.`, reference_id: order._id }),
   ])
+  // Booking deducts the seller's stock so availability drops everywhere.
+  const deducted = await deductStockForOrder(order, req.user._id)
+  if (deducted) await Order.updateOne({ _id: order._id }, { stock_deducted: true })
+
   // Push notification to seller about new order
   notifySeller(offer.seller_user_id, {
     title: `New Order ${orderCode}`,
@@ -1297,6 +1302,17 @@ async function cancelOrder(req, res) {
     { new: true }
   ).select('-purchase_rate -purchase_cost -warehouse_status').populate('seller_company_id', 'name city state').populate('product_id', 'code name image_urls').lean()
   if (!order) return sendError(res, 'Order cannot be cancelled at its current stage.', 409)
+
+  // Return the booked quantity to the seller's inventory.
+  if (order.stock_deducted) {
+    const restoreOrder = {
+      ...order,
+      product_id: order.product_id?._id || order.product_id,
+    }
+    const restored = await restoreStockForOrder(restoreOrder, req.user._id)
+    if (restored) await Order.updateOne({ _id: order._id }, { stock_deducted: false })
+  }
+
   await Notification.create({
     company_id: order.seller_company_id._id || order.seller_company_id,
     type: 'order_cancelled', title: `Order ${order.order_code} cancelled`,

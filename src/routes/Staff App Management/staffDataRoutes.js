@@ -92,13 +92,43 @@ router.get('/products', async (req, res) => {
         .lean(),
     ]);
 
-    console.log(`[Staff Products] company=${req.user.company_id} total_all=${total} returning=${products.length}`);
+    // Join live inventory so the Staff App can show real available stock next
+    // to each product (the app already renders `p.stock`). We sum available
+    // stock across warehouses per product; fall back to current_stock for
+    // legacy records.
+    const Inventory = require('../../models/Purchase & Inventory Management/Inventory');
+    const productIds = products.map(p => p._id);
+    const stockByProduct = new Map();
+    if (productIds.length) {
+      const invRows = await Inventory.aggregate([
+        { $match: { product_id: { $in: productIds } } },
+        {
+          $group: {
+            _id: '$product_id',
+            available: { $sum: { $max: ['$available_stock', '$current_stock'] } },
+            physical:  { $sum: { $max: ['$physical_stock',  '$current_stock'] } },
+          },
+        },
+      ]);
+      invRows.forEach(r => stockByProduct.set(String(r._id), r));
+    }
+    const withStock = products.map(p => {
+      const s = stockByProduct.get(String(p._id));
+      return {
+        ...p,
+        available_stock: s ? Math.max(s.available, 0) : 0,
+        physical_stock:  s ? Math.max(s.physical, 0)  : 0,
+        current_stock:   s ? Math.max(s.available, 0) : 0, // legacy mirror for the app
+      };
+    });
+
+    console.log(`[Staff Products] company=${req.user.company_id} total_all=${total} returning=${withStock.length}`);
 
     res.json({
       success: true,
       message: 'Products retrieved.',
       data: {
-        products,
+        products: withStock,
         pagination: paginate(total, parseInt(page), parseInt(limit)),
       },
     });

@@ -13,6 +13,10 @@ const userSchema = new mongoose.Schema(
       default: 'Sales Executive',
     },
     is_active:          { type: Boolean, default: true },
+    // Optional per-user permission overrides: { moduleKey: { actionKey: bool } }.
+    // When set, these take precedence over the user's role permissions. When
+    // null/empty, the role's permissions apply (backward compatible).
+    permissions:        { type: mongoose.Schema.Types.Mixed, default: null },
     last_login:         { type: Date, default: null },
     email_verified_at:  { type: Date, default: null },
     mobile_verified_at: { type: Date, default: null },

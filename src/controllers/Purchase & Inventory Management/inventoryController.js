@@ -21,9 +21,146 @@ const mongoose      = require('mongoose');
 // ── Ensure Warehouse is registered before populate ──────────────────────────
 require('../../models/Purchase & Inventory Management/Warehouse');
 
+/**
+ * Deduct an order's quantity from inventory at BOOKING time (order creation),
+ * so available stock drops immediately across all apps. Idempotent-safe by the
+ * caller via the order's `stock_deducted` flag.
+ *
+ * Reduces available_stock, physical_stock (and legacy current_stock), bumps the
+ * stock_out counter, and logs a StockMovement. Never throws — inventory issues
+ * must not block order creation. Returns true if a deduction happened.
+ *
+ * @param {Object} order  the created order document (needs product_id, qty, etc.)
+ * @param {ObjectId} userId  the acting user (for the movement log)
+ */
+async function deductStockForOrder(order, userId) {
+  try {
+    if (!order?.product_id || !order?.qty) return false;
+    const qty = Math.abs(parseFloat(order.qty)) || 0;
+    if (qty <= 0) return false;
+
+    // Find the inventory record for this product. Prefer the order's warehouse
+    // when it names one, but fall back to any record for the product (e.g. the
+    // "Unassigned" record) so stock still deducts when warehouses don't line up.
+    let inv = null;
+    if (order.warehouse_id) {
+      inv = await Inventory.findOne({ product_id: order.product_id, warehouse_id: order.warehouse_id });
+    }
+    if (!inv) {
+      inv = await Inventory.findOne({ product_id: order.product_id }).sort({ available_stock: -1 });
+    }
+    if (!inv) return false; // no inventory record for this product — skip silently
+
+    const prevPhysical = inv.physical_stock || 0;
+    const fromAvailable = Math.min(qty, inv.available_stock || 0);
+
+    await Inventory.findByIdAndUpdate(inv._id, {
+      $inc: {
+        available_stock: -fromAvailable,
+        physical_stock:  -qty,
+        current_stock:   -qty,   // legacy mirror
+        stock_out:       +qty,   // legacy counter
+      },
+    });
+
+    await StockMovement.create({
+      company_id:     inv.company_id,
+      product_id:     order.product_id,
+      product_name:   order.product_name || '',
+      product_code:   order.product_code || '',
+      warehouse_id:   order.warehouse_id || inv.warehouse_id || null,
+      movement_type:  'Stock Out',
+      quantity:       qty,
+      previous_stock: prevPhysical,
+      new_stock:      prevPhysical - qty,
+      unit:           order.unit || '',
+      reference_type: 'Order',
+      reference_id:   order._id?.toString() || '',
+      notes:          `Booked — Order ${order.order_code || ''}`,
+      created_by:     userId || order.created_by || null,
+      movement_date:  new Date(),
+    }).catch(e => console.error('[StockMovement] order booking log failed:', e.message));
+
+    return true;
+  } catch (e) {
+    console.error('[deductStockForOrder] failed gracefully:', e.message);
+    return false;
+  }
+}
+
+/**
+ * Restore an order's quantity back to inventory (on cancellation), reversing a
+ * prior booking deduction. Never throws. Returns true if a restore happened.
+ */
+async function restoreStockForOrder(order, userId) {
+  try {
+    if (!order?.product_id || !order?.qty) return false;
+    const qty = Math.abs(parseFloat(order.qty)) || 0;
+    if (qty <= 0) return false;
+
+    let inv = null;
+    if (order.warehouse_id) {
+      inv = await Inventory.findOne({ product_id: order.product_id, warehouse_id: order.warehouse_id });
+    }
+    if (!inv) {
+      inv = await Inventory.findOne({ product_id: order.product_id }).sort({ available_stock: -1 });
+    }
+    if (!inv) return false;
+
+    const prevPhysical = inv.physical_stock || 0;
+    await Inventory.findByIdAndUpdate(inv._id, {
+      $inc: {
+        available_stock: +qty,
+        physical_stock:  +qty,
+        current_stock:   +qty,
+        stock_in:        +qty,
+      },
+    });
+
+    await StockMovement.create({
+      company_id:     inv.company_id,
+      product_id:     order.product_id,
+      product_name:   order.product_name || '',
+      product_code:   order.product_code || '',
+      warehouse_id:   order.warehouse_id || inv.warehouse_id || null,
+      movement_type:  'Reversal',
+      quantity:       qty,
+      previous_stock: prevPhysical,
+      new_stock:      prevPhysical + qty,
+      unit:           order.unit || '',
+      reference_type: 'Order',
+      reference_id:   order._id?.toString() || '',
+      notes:          `Order ${order.order_code || ''} cancelled — stock returned`,
+      created_by:     userId || null,
+      movement_date:  new Date(),
+    }).catch(e => console.error('[StockMovement] order cancel log failed:', e.message));
+
+    return true;
+  } catch (e) {
+    console.error('[restoreStockForOrder] failed gracefully:', e.message);
+    return false;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** Resolve who created a product — mirrors the CRM "ADDED BY" badge logic so
+ *  Inventory shows the same source as Product Management. */
+function resolveCreatorType(product) {
+  if (!product) return '';
+  if (product.created_by_type) return product.created_by_type;
+  const role = String(product.created_by?.role || '').toLowerCase();
+  if (role.includes('retail')) return 'Retailer';
+  if (role.includes('whole'))  return 'Wholesaler';
+  if (role.includes('admin'))  return 'Admin';
+  const biz = String(product.company_id?.biz_type || '').toLowerCase();
+  if (biz.includes('retail')) return 'Retailer';
+  if (biz.includes('whole'))  return 'Wholesaler';
+  if (String(product.code || '').toUpperCase().startsWith('RPD-')) return 'Retailer';
+  return '';
+}
 
 /** Populate and flatten an inventory document */
 function flattenInventory(d) {
@@ -44,9 +181,16 @@ function flattenInventory(d) {
     product_code:   d.product_id?.code              || '',
     product_name:   d.product_id?.name              || '',
     unit:           d.product_id?.unit              || '',
+    gst_percent:    d.product_id?.gst_percent ?? null,
+    hsn_code:       d.product_id?.hsn_code           || '',
     brand_name:     d.product_id?.brand_id?.name    || '',
     category_name:  d.product_id?.category_id?.name || '',
     warehouse_name: d.warehouse_id?.name            || '',
+    // Who added the product (Admin / Staff App / Retailer App) + the person.
+    // Uses the same resolution as Product Management's "ADDED BY" badge.
+    added_by_type:  resolveCreatorType(d.product_id),
+    added_by_name:  d.product_id?.created_by?.name  || '',
+    added_by_role:  d.product_id?.created_by?.role  || '',
   };
 }
 
@@ -70,9 +214,11 @@ async function listInventory(req, res) {
   } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
-  const query = { company_id: req.user.company_id };
-  // Super Admin has no company_id — skip the company filter to see all inventory
-  if (!req.user.company_id) delete query.company_id;
+  // Super Admin sees ALL inventory across companies — skip the company filter
+  // even if their user record happens to carry a company_id.
+  const isSuperAdmin = req.user.role === 'Super Admin';
+  const query = {};
+  if (!isSuperAdmin && req.user.company_id) query.company_id = req.user.company_id;
   if (warehouse_id) query.warehouse_id = warehouse_id;
 
   // Stock-status filter
@@ -102,7 +248,7 @@ async function listInventory(req, res) {
     Inventory.find(query)
       .populate({
         path: 'product_id',
-        select: 'code name unit brand_id category_id',
+        select: 'code name unit gst_percent hsn_code brand_id category_id created_by created_by_type company_id',
         match: (() => {
           const m = {};
           if (search) m.$or = [
@@ -116,6 +262,8 @@ async function listInventory(req, res) {
         populate: [
           { path: 'brand_id',    select: 'name' },
           { path: 'category_id', select: 'name' },
+          { path: 'created_by',  select: 'name role' },
+          { path: 'company_id',  select: 'name biz_type' },
         ],
       })
       .populate('warehouse_id', 'name')
@@ -136,7 +284,7 @@ async function listInventory(req, res) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function getInventoryItem(req, res) {
   const scope = { _id: req.params.id };
-  if (req.user.company_id) scope.company_id = req.user.company_id;
+  if (req.user.role !== 'Super Admin' && req.user.company_id) scope.company_id = req.user.company_id;
 
   const doc = await Inventory.findOne(scope)
     .populate({
@@ -152,25 +300,61 @@ async function getInventoryItem(req, res) {
 
   if (!doc) return sendError(res, 'Inventory record not found.', 404);
 
-  const movQuery = {
-    product_id:   doc.product_id?._id,
-    warehouse_id: doc.warehouse_id?._id || doc.warehouse_id,
-  };
-  if (req.user.company_id) movQuery.company_id = req.user.company_id;
+  // Movements for this product. Match by product_id (always reliable) scoped to
+  // the inventory record's company. We deliberately DON'T force warehouse_id —
+  // purchase/order/dispatch/adjust movements may carry a different or null
+  // warehouse, and requiring an exact match would hide the whole history.
+  const movQuery = { product_id: doc.product_id?._id };
+  const movCompany = doc.company_id || req.user.company_id;
+  if (movCompany) movQuery.company_id = movCompany;
+  // If this inventory row is tied to a specific warehouse, prefer movements for
+  // that warehouse OR ones with no warehouse recorded.
+  const whId = doc.warehouse_id?._id || doc.warehouse_id;
+  if (whId) movQuery.$or = [{ warehouse_id: whId }, { warehouse_id: null }];
 
   const movements = await StockMovement.find(movQuery)
     .sort({ movement_date: -1 })
-    .limit(20)
+    .limit(30)
     .lean();
 
   sendSuccess(res, { ...flattenInventory(doc), movements });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/inventory/:id/settings — update alert/reorder thresholds
+// Body: { low_stock_alert?, reorder_level? }
+// ─────────────────────────────────────────────────────────────────────────────
+async function updateInventorySettings(req, res) {
+  const scope = { _id: req.params.id };
+  if (req.user.role !== 'Super Admin' && req.user.company_id) scope.company_id = req.user.company_id;
+
+  const update = {};
+  if (req.body.low_stock_alert !== undefined) {
+    const v = Number(req.body.low_stock_alert);
+    if (Number.isNaN(v) || v < 0) return sendError(res, 'Min stock alert must be zero or more.', 400);
+    update.low_stock_alert = v;
+  }
+  if (req.body.reorder_level !== undefined) {
+    const v = Number(req.body.reorder_level);
+    if (Number.isNaN(v) || v < 0) return sendError(res, 'Reorder level must be zero or more.', 400);
+    update.reorder_level = v;
+  }
+  if (Object.keys(update).length === 0) {
+    return sendError(res, 'Nothing to update.', 400);
+  }
+
+  const doc = await Inventory.findOneAndUpdate(scope, { $set: update }, { new: true }).lean();
+  if (!doc) return sendError(res, 'Inventory record not found.', 404);
+  sendSuccess(res, doc, 'Alert settings updated.');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/inventory/summary  — dashboard KPIs
 // ─────────────────────────────────────────────────────────────────────────────
 async function getInventorySummary(req, res) {
-  const cid = req.user.company_id;
+  // Super Admin aggregates across all companies even if their user record
+  // carries a company_id.
+  const cid = req.user.role === 'Super Admin' ? null : req.user.company_id;
   // Super Admin (no company_id) gets aggregate across all companies
   const matchStage = cid
     ? { $match: { company_id: new mongoose.Types.ObjectId(cid.toString()) } }
@@ -239,20 +423,44 @@ async function adjustStock(req, res) {
   if (!product_id || adjustment === undefined)
     return sendError(res, 'product_id and adjustment are required.');
 
-  const filter = { company_id: req.user.company_id, product_id };
-  if (warehouse_id) filter.warehouse_id = warehouse_id;
+  // Resolve the company that owns this stock record. A Super Admin has no
+  // company_id of their own, so fall back to the product's company (inventory
+  // records — and the Inventory model — require a company_id).
+  const Product = require('../../models/Product Management/Product');
+  let companyId = req.user.company_id;
+  if (!companyId) {
+    const prod = await Product.findById(product_id).select('company_id').lean();
+    companyId = prod?.company_id || null;
+  }
+  if (!companyId) {
+    return sendError(res, 'Could not resolve the owning company for this product.', 400);
+  }
+
+  // The inventory unique index is { product_id, warehouse_id } (company_id is
+  // NOT part of it). So match by product + warehouse only — matching on
+  // company_id too can miss an existing record and cause a duplicate-key error
+  // on insert. company_id is only applied when creating a fresh record.
+  const wh = warehouse_id || null;
+  const filter = { product_id, warehouse_id: wh };
 
   let inv = await Inventory.findOne(filter);
   if (!inv) {
-    // Auto-create if not exists (first stock-in)
-    inv = await Inventory.create({
-      company_id:      req.user.company_id,
-      product_id,
-      warehouse_id:    warehouse_id || null,
-      physical_stock:  0,
-      available_stock: 0,
-      stock_in: 0, stock_out: 0, current_stock: 0,
-    });
+    // Auto-create if not exists (first stock-in). Upsert guards against a race
+    // where a parallel request created the record between findOne and create.
+    inv = await Inventory.findOneAndUpdate(
+      filter,
+      {
+        $setOnInsert: {
+          company_id:      companyId,
+          product_id,
+          warehouse_id:    wh,
+          physical_stock:  0,
+          available_stock: 0,
+          stock_in: 0, stock_out: 0, current_stock: 0,
+        },
+      },
+      { upsert: true, new: true }
+    );
   }
 
   const qty    = parseFloat(adjustment);
@@ -283,7 +491,7 @@ async function adjustStock(req, res) {
   const updated = await Inventory.findByIdAndUpdate(inv._id, update, { new: true }).lean();
 
   await logMovement({
-    company_id:     req.user.company_id,
+    company_id:     inv.company_id || companyId,
     product_id,
     warehouse_id:   warehouse_id || null,
     movement_type:  isIn ? 'Stock In' : 'Stock Out',
@@ -581,7 +789,7 @@ async function listMovements(req, res) {
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const query = {};
-  if (req.user.company_id) query.company_id = req.user.company_id;
+  if (req.user.role !== 'Super Admin' && req.user.company_id) query.company_id = req.user.company_id;
   if (product_id)    query.product_id    = product_id;
   if (warehouse_id)  query.warehouse_id  = warehouse_id;
   if (movement_type) query.movement_type = movement_type;
@@ -606,7 +814,10 @@ async function listMovements(req, res) {
 module.exports = {
   listInventory,
   getInventoryItem,
+  updateInventorySettings,
   getInventorySummary,
+  deductStockForOrder,
+  restoreStockForOrder,
   adjustStock,
   reserveStock,
   releaseReserve,
