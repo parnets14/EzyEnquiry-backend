@@ -90,4 +90,42 @@ async function ensureDefaultCompany(email) {
   return company
 }
 
-module.exports = { seedSuperAdmin, healOrphanUsers }
+/**
+ * Seed platform-wide master dropdown values (Category/Brand/Finish/Size/…)
+ * used by the Wholesaler App "Add Product" form. Runs once if empty.
+ */
+async function seedMasters() {
+  try {
+    const Master = require('../models/System Management/Master')
+    const count = await Master.countDocuments()
+    if (count > 0) return
+
+    const defaults = {
+      category:     ['Tiles', 'Granite', 'Marble', 'Sanitary', 'Bathroom Fittings', 'Adhesives'],
+      sub_category: [
+        { name: 'Floor Tiles', parent: 'Tiles' }, { name: 'Wall Tiles', parent: 'Tiles' },
+        { name: 'Vitrified Tiles', parent: 'Tiles' }, { name: 'Granite Slab', parent: 'Granite' },
+      ],
+      brand:    ['Kajaria', 'Somany', 'Nitco', 'Johnson', 'Asian', 'Generic'],
+      finish:   ['Glossy', 'Matt', 'Satin', 'Polished', 'Rustic', 'Sugar', 'Carving'],
+      size:     ['300x300', '600x600', '300x600', '600x1200', '800x800', '24x24', '12x18'],
+      color:    ['White', 'Ivory', 'Beige', 'Grey', 'Black', 'Brown', 'Blue'],
+      material: ['Ceramic', 'Vitrified', 'Porcelain', 'Natural Stone'],
+      unit:     ['Sq Ft', 'Box', 'Piece', 'Sq Mtr'],
+    }
+
+    const docs = []
+    for (const [type, values] of Object.entries(defaults)) {
+      values.forEach((v, i) => {
+        if (typeof v === 'string') docs.push({ type, name: v, sort: i })
+        else docs.push({ type, name: v.name, parent: v.parent || '', sort: i })
+      })
+    }
+    await Master.insertMany(docs, { ordered: false }).catch(() => {})
+    console.log(`[Seed] Master lists seeded (${docs.length} values).`)
+  } catch (e) {
+    console.warn('[Seed] seedMasters skipped:', e.message)
+  }
+}
+
+module.exports = { seedSuperAdmin, healOrphanUsers, seedMasters }

@@ -22,6 +22,8 @@ const dispatchSchema = new mongoose.Schema(
     expected_delivery_days: { type: Number, default: null },
     expected_delivery:      { type: Date, default: null },
     delivered_date:         { type: Date, default: null },
+    pod_image_url:          { type: String, default: '' },   // proof of delivery (photo/signature)
+    pod_remarks:            { type: String, default: '' },
     notes:                  { type: String, default: '' },
     status:                 { type: String, enum: ['Dispatched', 'In Transit', 'Delivered', 'Returned'], default: 'Dispatched' },
     created_by:             { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

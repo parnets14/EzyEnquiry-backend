@@ -11,6 +11,11 @@ const productSchema = new mongoose.Schema(
     brand_id:        { type: mongoose.Schema.Types.ObjectId, ref: 'Brand', default: null },
     category_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
     sub_category_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
+    // Free-text taxonomy names — used when picking from the global Master lists
+    // (wholesaler app) instead of per-company Brand/Category documents.
+    brand_name:        { type: String, default: '' },
+    category_name:     { type: String, default: '' },
+    sub_category_name: { type: String, default: '' },
 
     // Basic specs
     hsn_code:     { type: String, default: '' },
@@ -75,6 +80,8 @@ const productSchema = new mongoose.Schema(
 
     // Images
     image_urls: { type: [String], default: [] },
+    // Optional catalogue / price-list PDF attachment
+    catalog_pdf_url: { type: String, default: '' },
 
     // Soft delete
     deleted_at:         { type: Date, default: null },

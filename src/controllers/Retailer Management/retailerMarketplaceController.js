@@ -282,6 +282,8 @@ function offerResponse(offer) {
       other: offer.other_charge,
     },
     total_amount: offer.total_amount,
+    available_quantity: offer.available_quantity ?? null,
+    delivery_timeline: offer.delivery_timeline || '',
     notes: offer.notes || '',
     seller: seller?._id ? { id: seller._id, name: seller.name || '', city: seller.city || '', state: seller.state || '' } : null,
     responded_at: offer.responded_at,
@@ -1128,7 +1130,10 @@ async function sellerCreateOffer(req, res) {
     seller_company_id: req.user.company_id, seller_user_id: req.user._id, product_id: enquiry.product_id,
     qty: enquiry.qty, unit: enquiry.unit, unit_price: unitPrice, gst_percent: gstPercent,
     amount, gst_amount: gstAmount, transport_charge: transport, packing_charge: packing,
-    other_charge: other, total_amount: total, notes: String(req.body.notes || '').trim().slice(0, 2000),
+    other_charge: other, total_amount: total,
+    available_quantity: (req.body.available_quantity !== undefined && req.body.available_quantity !== '' && !isNaN(parseFloat(req.body.available_quantity))) ? parseFloat(req.body.available_quantity) : null,
+    delivery_timeline: String(req.body.delivery_timeline || '').trim().slice(0, 100),
+    notes: String(req.body.notes || '').trim().slice(0, 2000),
   })
   await Enquiry.updateOne({ _id: enquiry._id }, { status: 'Replied', offered_price: unitPrice, distributor_reply: offer.notes || '' })
   await Notification.create({

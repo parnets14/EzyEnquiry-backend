@@ -1,6 +1,7 @@
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
 const Enquiry      = require('../../models/Marketplace Management/Enquiry');
 const Notification = require('../../models/System Management/Notification');
+const Company      = require('../../models/Company Management/Company');
 const mongoose     = require('mongoose');
 
 // ── Role sets ────────────────────────────────────────────────
@@ -66,6 +67,12 @@ async function createEnquiry(req, res) {
   if (!retailer_name || !retailer_mobile || !qty)
     return sendError(res, 'Retailer name, mobile and qty are required.');
 
+  // ── Enquiry-limit enforcement (per subscription plan; 0 = unlimited) ──
+  const company = await Company.findById(req.user.company_id).select('enquiry_limit enquiries_used').lean();
+  if (company && company.enquiry_limit > 0 && (company.enquiries_used || 0) >= company.enquiry_limit) {
+    return sendError(res, `Enquiry limit reached (${company.enquiry_limit}). Please upgrade your subscription plan.`, 403);
+  }
+
   // Auto-generate enq_code
   const last = await Enquiry.findOne({ enq_code: /^ENQ-/ }).sort({ enq_code: -1 }).lean();
   const num  = last?.enq_code ? parseInt(last.enq_code.split('-')[1], 10) : 0;
@@ -78,6 +85,9 @@ async function createEnquiry(req, res) {
     created_by: req.user._id,
     status:     'New',
   });
+
+  // Count this enquiry against the company's quota.
+  await Company.findByIdAndUpdate(req.user.company_id, { $inc: { enquiries_used: 1 } }).catch(() => {});
 
   await Notification.create({
     company_id:   req.user.company_id,
@@ -117,6 +127,8 @@ async function updateEnquiry(req, res) {
   if (req.body.distributor_reply !== undefined)            update.distributor_reply = req.body.distributor_reply;
   if (req.body.negotiation_note  !== undefined)            update.negotiation_note  = req.body.negotiation_note;
   if (req.body.offered_price     !== undefined)            update.offered_price     = req.body.offered_price;
+  if (req.body.available_quantity !== undefined)           update.available_quantity = req.body.available_quantity;
+  if (req.body.delivery_timeline !== undefined)            update.delivery_timeline = req.body.delivery_timeline;
   if (req.body.remarks           !== undefined)            update.remarks           = req.body.remarks;
   if (req.body.order_id)                                   update.order_id          = req.body.order_id;
   // Allow editing retailer details

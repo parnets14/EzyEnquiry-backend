@@ -8,6 +8,7 @@ const subscriptionSchema = new mongoose.Schema(
     expires_at:  { type: Date, required: true },
     amount_paid: { type: Number, default: 0 },
     payment_ref: { type: String, default: '' },
+    enquiry_limit: { type: Number, default: 0 },
     status:      { type: String, default: 'Active' },
   },
   { timestamps: { createdAt: 'created_at' } }

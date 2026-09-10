@@ -14,8 +14,8 @@ const { MODULES, moduleAccess } = require('./config/permissions')
 
 // ── Utils ────────────────────────────────────────────────────
 const { logger }                     = require('./utils/logger')
-const { seedSuperAdmin, healOrphanUsers } = require('./utils/seeder')
-const { migrateInventoryBuckets }        = require('./utils/migrateInventory')
+const { seedSuperAdmin, healOrphanUsers, seedMasters } = require('./utils/seeder')
+const { migrateInventoryBuckets }                      = require('./utils/migrateInventory')
 
 // ── Middleware ───────────────────────────────────────────────
 const { errorHandler }       = require('./middleware/errorHandler')
@@ -169,6 +169,13 @@ const ERP_ROUTE_PREFIXES = [
 ]
 app.use(ERP_ROUTE_PREFIXES, authenticate, denyRetailerErpAccess, auditLogger)
 
+// Audit mutating wholesaler actions too (product/inventory/warehouse/purchase/quotation/invoice writes).
+const WHOLESALER_AUDIT_PREFIXES = [
+  '/api/wholesaler/products', '/api/wholesaler/inventory', '/api/wholesaler/warehouses',
+  '/api/wholesaler/purchases', '/api/wholesaler/quotations', '/api/wholesaler/invoices',
+]
+app.use(WHOLESALER_AUDIT_PREFIXES, authenticate, auditLogger)
+
 // ── Wholesaler Protected Routes ───────────────────────────────
 app.use('/api/wholesaler/products',   authenticate, requireActiveCompany, wholesalerProductRoutes)
 app.use('/api/wholesaler/inventory',  authenticate, requireActiveCompany, wholesalerInventoryRoutes)
@@ -179,6 +186,16 @@ app.use('/api/wholesaler/quotations',    authenticate, requireActiveCompany, req
 app.use('/api/wholesaler/all-quotations', authenticate, require('./routes/Wholesaler Management/wholesalerAdminQuotationRoutes'))
 app.use('/api/wholesaler/all-products',   authenticate, require('./routes/Wholesaler Management/wholesalerAdminProductRoutes'))
 app.use('/api/wholesaler/invoices',       authenticate, requireActiveCompany, require('./routes/Wholesaler Management/wholesalerInvoiceRoutes'))
+
+// ── Wholesaler Admin — cross-company visibility (Super Admin) ──
+const wholesalerAdminVis = require('./routes/Wholesaler Management/wholesalerAdminVisibilityRoutes')
+app.use('/api/wholesaler/all-orders',       authenticate, wholesalerAdminVis.orders)
+app.use('/api/wholesaler/all-enquiries',    authenticate, wholesalerAdminVis.enquiries)
+app.use('/api/wholesaler/all-users',        authenticate, wholesalerAdminVis.users)
+app.use('/api/wholesaler/all-transactions', authenticate, wholesalerAdminVis.transactions)
+app.use('/api/wholesaler/all-leads',        authenticate, wholesalerAdminVis.leads)
+app.use('/api/wholesaler/all-followups',    authenticate, wholesalerAdminVis.followups)
+app.use('/api/wholesaler/all-customers',    authenticate, wholesalerAdminVis.customers)
 
 // ── Protected Routes ──────────────────────────────────────────
 app.use('/api/companies',     authenticate, moduleAccess(MODULES.COMPANY), companyRoutes)
@@ -232,6 +249,10 @@ app.use('/api/documents',     authenticate, requireCompany, moduleAccess(MODULES
 app.use('/api/subscriptions', authenticate, requireCompany, moduleAccess(MODULES.SUBSCRIPTIONS), subscriptionRoutes)
 app.use('/api/profile',       authenticate, moduleAccess(MODULES.PROFILE), profileRoutes)
 app.use('/api/role-permissions', authenticate, requireCompany, rolePermissionRoutes)
+// Platform-wide master dropdown values (read by all; Super Admin manages)
+app.use('/api/masters',          authenticate, require('./routes/System Management/masterRoutes'))
+// Audit log read path (Super Admin = all; Company Owner = own company)
+app.use('/api/audit-logs',       authenticate, require('./routes/System Management/auditLogRoutes'))
 
 // ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {
@@ -244,6 +265,7 @@ app.use(errorHandler)
 // ── Connect DB → Start Server ─────────────────────────────────
 connectDB().then(async () => {
   await seedSuperAdmin()
+  await seedMasters()
   await healOrphanUsers()
   await migrateInventoryBuckets()   // backfill physical_stock/available_stock on legacy records
 

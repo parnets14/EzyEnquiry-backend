@@ -271,7 +271,46 @@ async function exportReport(req, res) {
   return sendError(res, 'Invalid format. Use format=pdf or format=excel.', 400);
 }
 
-module.exports = { getSalesReport, getPurchaseReport, getExpenseReport, getCustomerReport, getSupplierReport, getInventoryReport, getEmployeeReport, exportReport };
+/** GET /api/reports/analytics — top products, slow-moving products, sales trend */
+async function getAnalytics(req, res) {
+  const cid = new mongoose.Types.ObjectId(req.user.company_id.toString());
+  const Inventory = require('../../models/Purchase & Inventory Management/Inventory');
+
+  const [topProducts, slowInventory, salesTrend] = await Promise.all([
+    // Top selling by qty
+    Sale.aggregate([
+      { $match: { company_id: cid } },
+      { $group: { _id: '$product_id', product_name: { $first: '$product_name' }, total_qty: { $sum: '$qty' }, total_revenue: { $sum: '$total_amount' } } },
+      { $sort: { total_qty: -1 } },
+      { $limit: 10 },
+    ]),
+    // Slow-moving: inventory with stock on hand but little/no recent sales — approximate by high available_stock
+    Inventory.aggregate([
+      { $match: { company_id: cid, available_stock: { $gt: 0 } } },
+      { $lookup: { from: 'products', localField: 'product_id', foreignField: '_id', as: 'p' } },
+      { $unwind: { path: '$p', preserveNullAndEmptyArrays: true } },
+      { $project: { product_name: '$p.name', available_stock: 1, updated_at: 1 } },
+      { $sort: { updated_at: 1 } },   // least-recently updated first (stale)
+      { $limit: 10 },
+    ]),
+    // 12-period monthly sales trend
+    Sale.aggregate([
+      { $match: { company_id: cid, sale_date: { $exists: true, $ne: null } } },
+      { $group: {
+        _id:   { $dateToString: { format: '%b %Y', date: '$sale_date' } },
+        sales: { $sum: '$total_amount' },
+        sort:  { $min: '$sale_date' },
+      } },
+      { $sort: { sort: 1 } },
+      { $limit: 12 },
+      { $project: { _id: 0, month: '$_id', sales: 1 } },
+    ]),
+  ]);
+
+  sendSuccess(res, { topProducts, slowProducts: slowInventory, trend: salesTrend });
+}
+
+module.exports = { getSalesReport, getPurchaseReport, getExpenseReport, getCustomerReport, getSupplierReport, getInventoryReport, getEmployeeReport, getAnalytics, exportReport };
 
 /** GET /api/reports/customers */
 async function getCustomerReport(req, res) {

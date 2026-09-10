@@ -76,7 +76,7 @@ const ROLE_MODULES = {
   'Sales Executive': ['dashboard', 'profile', 'notifications', 'products', 'product_search', 'enquiries', 'orders', 'customers', 'leads', 'followups', 'quotations'],
   'Warehouse Staff': ['dashboard', 'profile', 'notifications', 'product_search', 'warehouses', 'inventory', 'stock_transfer', 'orders', 'dispatches'],
   'Retailer': ['dashboard', 'profile', 'notifications', 'product_search', 'enquiries', 'orders'],
-  'Wholesaler': ['dashboard', 'profile', 'notifications', 'product_search', 'products', 'inventory', 'enquiries', 'orders'],
+  'Wholesaler': ['dashboard', 'profile', 'notifications', 'product_search', 'products', 'inventory', 'stock_transfer', 'warehouses', 'suppliers', 'purchases', 'enquiries', 'orders', 'dispatches', 'customers', 'leads', 'followups', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'staff', 'reports', 'documents', 'subscriptions'],
 }
 
 // Per-role action grants. '*' grants every catalogued action in that module.
@@ -113,8 +113,11 @@ const ROLE_ACTION_GRANTS = {
   },
   'Wholesaler': {
     dashboard: ['view'], profile: '*', notifications: '*', product_search: ['view'],
-    products: ['view', 'create', 'edit', 'delete'], inventory: ['view', 'stock_in', 'stock_out'],
-    enquiries: ['view', 'reply', 'offer'], orders: ['view', 'edit', 'approve', 'dispatch'],
+    products: '*', inventory: '*', stock_transfer: '*', warehouses: '*', suppliers: '*', purchases: '*',
+    enquiries: '*', orders: '*', dispatches: '*',
+    customers: '*', leads: '*', followups: '*',
+    quotations: '*', invoices: '*', sales: '*', expenses: '*', payments: '*', accounts: '*', profit_loss: '*', staff: '*', reports: '*',
+    documents: '*', subscriptions: '*',
   },
 }
 

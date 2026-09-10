@@ -51,6 +51,9 @@ async function createProduct(req, res) {
     brand_id:       b.brand_id || null,
     category_id:    b.category_id || null,
     sub_category_id: b.sub_category_id || null,
+    brand_name:        b.brand_name || '',
+    category_name:     b.category_name || '',
+    sub_category_name: b.sub_category_name || '',
 
     hsn_code:  b.hsn_code || '',
     size:      b.size || '',
@@ -88,6 +91,7 @@ async function createProduct(req, res) {
     product_type: b.product_type || 'Regular Product',
     source:       'wholesaler',   // tag: added from the wholesaler app
     image_urls:   Array.isArray(b.image_urls) ? b.image_urls : [],
+    catalog_pdf_url: b.catalog_pdf_url || '',
     is_active:    true,
     status:       'active',
   })
@@ -146,6 +150,9 @@ async function listCatalog(req, res) {
       { code:   { $regex: search, $options: 'i' } },
       { design: { $regex: search, $options: 'i' } },
       { alias:  { $regex: search, $options: 'i' } },
+      { size:          { $regex: search, $options: 'i' } },
+      { category_name: { $regex: search, $options: 'i' } },
+      { brand_name:    { $regex: search, $options: 'i' } },
     ]
   }
   if (size)     query.size     = { $regex: size,     $options: 'i' }
@@ -154,11 +161,14 @@ async function listCatalog(req, res) {
   if (color)    query.color    = { $regex: color,    $options: 'i' }
 
   const mongoose = require('mongoose')
-  if (category && mongoose.Types.ObjectId.isValid(category)) {
-    query.category_id = category
+  // Category / brand filter: accept an ObjectId (per-company ref) OR a name string (global masters).
+  if (category) {
+    if (mongoose.Types.ObjectId.isValid(category)) query.category_id = category
+    else query.category_name = { $regex: category, $options: 'i' }
   }
-  if (brand && mongoose.Types.ObjectId.isValid(brand)) {
-    query.brand_id = brand
+  if (brand) {
+    if (mongoose.Types.ObjectId.isValid(brand)) query.brand_id = brand
+    else query.brand_name = { $regex: brand, $options: 'i' }
   }
 
   const [total, products] = await Promise.all([
@@ -172,6 +182,12 @@ async function listCatalog(req, res) {
       .limit(parseInt(limit))
       .lean(),
   ])
+
+  // Disable client/proxy caching so tab switches (all / catalog_only / mine)
+  // always return fresh, correctly-filtered data (avoids stale 304 responses).
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  res.set('Pragma', 'no-cache')
+  res.removeHeader && res.removeHeader('ETag')
 
   sendSuccess(res, {
     products,
@@ -237,7 +253,8 @@ async function updateProduct(req, res) {
   const textFields = [
     'name', 'alias', 'hsn_code', 'size', 'finish', 'material', 'color', 'surface',
     'thickness', 'grade', 'tile_type', 'application', 'origin', 'manufacturer',
-    'design', 'collection', 'unit', 'description', 'product_type',
+    'design', 'collection', 'unit', 'description', 'product_type', 'code',
+    'brand_name', 'category_name', 'sub_category_name',
   ]
   textFields.forEach(f => { if (b[f] !== undefined) update[f] = b[f] })
 
@@ -254,6 +271,11 @@ async function updateProduct(req, res) {
   })
 
   if (Array.isArray(b.image_urls)) update.image_urls = b.image_urls
+  if (b.catalog_pdf_url !== undefined) update.catalog_pdf_url = b.catalog_pdf_url
+
+  // Lifecycle: active | inactive | out_of_stock | discontinued
+  if (b.status !== undefined)    update.status    = b.status
+  if (b.is_active !== undefined) update.is_active = !!b.is_active
 
   // Guard duplicate code if code is being changed
   if (b.code && String(b.code).trim() && String(b.code).trim() !== existing.code) {
@@ -274,6 +296,127 @@ async function uploadProductImage(req, res) {
   if (!req.file) return sendError(res, 'No image file received.', 400)
   const url = `/uploads/products/${req.file.filename}`
   sendSuccess(res, { url }, 'Image uploaded.', 201)
+}
+
+// POST /api/wholesaler/products/upload-doc  (multipart, field: "doc")
+// Returns { url } — catalogue / price-list PDF path stored in catalog_pdf_url.
+async function uploadProductDoc(req, res) {
+  if (!req.file) return sendError(res, 'No PDF file received.', 400)
+  const url = `/uploads/products/${req.file.filename}`
+  sendSuccess(res, { url }, 'Document uploaded.', 201)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/wholesaler/products/bulk-import   (multipart, field: "file")
+// Bulk create + bulk price-update from an Excel/CSV.
+// Header row (case-insensitive): code, name, category, sub_category, brand,
+//   material, size, finish, color, thickness, purchase, selling, dealer, retail, gst
+// Row with a matching own product `code` → price/spec update; else → create.
+// ─────────────────────────────────────────────────────────────────────────────
+async function bulkImportProducts(req, res) {
+  const companyId = req.user.company_id
+  if (!companyId) return sendError(res, 'No company linked to your account.', 400)
+  if (!req.file)  return sendError(res, 'No file received. Upload an .xlsx or .csv.', 400)
+
+  const ExcelJS = require('exceljs')
+  const wb = new ExcelJS.Workbook()
+  try {
+    if (/\.csv$/i.test(req.file.originalname)) {
+      await wb.csv.readFile(req.file.path)
+    } else {
+      await wb.xlsx.readFile(req.file.path)
+    }
+  } catch (e) {
+    return sendError(res, 'Could not read the file. Ensure it is a valid .xlsx or .csv.', 400)
+  }
+
+  const ws = wb.worksheets[0]
+  if (!ws || ws.rowCount < 2) return sendError(res, 'The sheet has no data rows.', 400)
+
+  // Map header names → column index.
+  const headerRow = ws.getRow(1)
+  const col = {}
+  headerRow.eachCell((cell, c) => {
+    const key = String(cell.value || '').trim().toLowerCase().replace(/\s+/g, '_')
+    if (key) col[key] = c
+  })
+  const pick = (row, ...names) => {
+    for (const n of names) {
+      if (col[n]) {
+        const v = row.getCell(col[n]).value
+        if (v !== null && v !== undefined && v !== '') return typeof v === 'object' && v.result !== undefined ? v.result : v
+      }
+    }
+    return undefined
+  }
+  const numOr = (v, d = 0) => (v === undefined || v === '' || isNaN(parseFloat(v)) ? d : parseFloat(v))
+
+  let created = 0, updated = 0, skipped = 0
+  const errors = []
+
+  for (let r = 2; r <= ws.rowCount; r++) {
+    const row = ws.getRow(r)
+    const name = pick(row, 'name', 'product_name', 'design_name')
+    const code = pick(row, 'code', 'product_code')
+    if (!name && !code) { skipped++; continue }   // blank row
+
+    const spec = {
+      category_name:     pick(row, 'category') ? String(pick(row, 'category')).trim() : undefined,
+      sub_category_name: pick(row, 'sub_category', 'subcategory') ? String(pick(row, 'sub_category', 'subcategory')).trim() : undefined,
+      brand_name:        pick(row, 'brand') ? String(pick(row, 'brand')).trim() : undefined,
+      material:          pick(row, 'material') ? String(pick(row, 'material')).trim() : undefined,
+      size:              pick(row, 'size') ? String(pick(row, 'size')).trim() : undefined,
+      finish:            pick(row, 'finish') ? String(pick(row, 'finish')).trim() : undefined,
+      color:             pick(row, 'color', 'colour') ? String(pick(row, 'color', 'colour')).trim() : undefined,
+      thickness:         pick(row, 'thickness') ? String(pick(row, 'thickness')).trim() : undefined,
+    }
+    const prices = {
+      purchase_price: pick(row, 'purchase', 'purchase_rate') !== undefined ? numOr(pick(row, 'purchase', 'purchase_rate')) : undefined,
+      selling_price:  pick(row, 'selling', 'selling_rate')   !== undefined ? numOr(pick(row, 'selling', 'selling_rate'))   : undefined,
+      wholesale_rate: pick(row, 'dealer', 'dealer_rate', 'wholesale') !== undefined ? numOr(pick(row, 'dealer', 'dealer_rate', 'wholesale')) : undefined,
+      mrp:            pick(row, 'retail', 'retail_rate', 'mrp') !== undefined ? numOr(pick(row, 'retail', 'retail_rate', 'mrp')) : undefined,
+      gst_percent:    pick(row, 'gst', 'gst_percent') !== undefined ? numOr(pick(row, 'gst', 'gst_percent'), 18) : undefined,
+    }
+    // Drop undefined keys so we don't overwrite existing values with blanks on update.
+    const clean = (obj) => Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined))
+
+    try {
+      const codeStr = code ? String(code).trim() : ''
+      const existing = codeStr
+        ? await Product.findOne({ company_id: companyId, code: codeStr }).lean()
+        : null
+
+      if (existing) {
+        await Product.findByIdAndUpdate(existing._id, { $set: { ...clean(spec), ...clean(prices) } })
+        updated++
+      } else {
+        if (!name) { errors.push(`Row ${r}: new product needs a name.`); skipped++; continue }
+        await Product.create({
+          company_id:      companyId,
+          created_by:      req.user._id || req.user.id,
+          created_by_type: 'Wholesaler',
+          code:            codeStr || await nextProductCode(companyId),
+          name:            String(name).trim(),
+          unit:            'Sq Ft',
+          source:          'wholesaler',
+          is_active:       true,
+          status:          'active',
+          ...clean(spec),
+          ...clean(prices),
+        })
+        created++
+      }
+    } catch (e) {
+      errors.push(`Row ${r}: ${e.message}`)
+      skipped++
+    }
+  }
+
+  // Best-effort cleanup of the uploaded temp file.
+  try { require('fs').unlinkSync(req.file.path) } catch {}
+
+  sendSuccess(res, { created, updated, skipped, errors: errors.slice(0, 20) },
+    `Import complete: ${created} created, ${updated} updated, ${skipped} skipped.`)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -343,6 +486,6 @@ async function deleteAdminProduct(req, res) {
 }
 
 module.exports = {
-  listCatalog, getCatalogProduct, getFilters, createProduct, updateProduct, uploadProductImage, listMyProducts, deleteProduct,
+  listCatalog, getCatalogProduct, getFilters, createProduct, updateProduct, uploadProductImage, uploadProductDoc, bulkImportProducts, listMyProducts, deleteProduct,
   getAdminProduct, deleteAdminProduct,
 }

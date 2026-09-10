@@ -6,11 +6,15 @@ const User = require('../models/User Management/User')
  */
 async function authenticate(req, res, next) {
   const header = req.headers['authorization']
-  if (!header || !header.startsWith('Bearer ')) {
+  // Header Bearer token OR ?token= query param (used for authenticated file-download links).
+  let token = null
+  if (header && header.startsWith('Bearer ')) token = header.slice(7)
+  else if (req.query && req.query.token) token = String(req.query.token)
+
+  if (!token) {
     return res.status(401).json({ success: false, message: 'No token provided.' })
   }
 
-  const token = header.slice(7)
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET)
 

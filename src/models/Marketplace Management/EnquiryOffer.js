@@ -18,6 +18,8 @@ const enquiryOfferSchema = new mongoose.Schema(
     packing_charge:   { type: Number, default: 0, min: 0 },
     other_charge:     { type: Number, default: 0, min: 0 },
     total_amount:     { type: Number, required: true, min: 0 },
+    available_quantity: { type: Number, default: null },   // stock the seller can supply
+    delivery_timeline:  { type: String, default: '' },      // e.g. "3-5 days"
     notes:            { type: String, default: '', maxlength: 2000 },
     status:           { type: String, enum: ['Pending', 'Accepted', 'Rejected', 'Withdrawn'], default: 'Pending' },
     responded_at:     { type: Date, default: null },
