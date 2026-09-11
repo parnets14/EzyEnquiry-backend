@@ -143,26 +143,31 @@ async function fanOutAcceptedQuotation(quotation, req) {
   }).catch(() => {});
 
   // ── Sale (admin sales record; linked to the order, idempotent by order_id) ──
-  await Sale.create({
-    company_id: quotation.company_id,
-    order_id: order._id,
-    customer_name: quotation.customer_name || 'Customer',
-    product_id: item.product_id || null,
-    product_code: item.product_code || '',
-    product_name: item.product_name || '',
-    qty,
-    rate,
-    amount,
-    gst_percent: gstPercent,
-    gst_amount: gstAmount,
-    total_amount: totalAmount,
-    discount,
-    grand_total: totalAmount,
-    sale_status: 'Confirmed',
-    sale_date: new Date(),
-    notes: `Auto-created from accepted quotation ${quotation.quotation_no}`,
-    created_by: req.user._id,
-  }).catch(() => {});
+  // Guard against duplicates — dispatchController.markDelivered may also create
+  // a Sale on delivery. Only create here if one doesn't already exist.
+  const existingSaleForOrder = await Sale.findOne({ order_id: order._id }).select('_id').lean().catch(() => null);
+  if (!existingSaleForOrder) {
+    await Sale.create({
+      company_id: quotation.company_id,
+      order_id: order._id,
+      customer_name: quotation.customer_name || 'Customer',
+      product_id: item.product_id || null,
+      product_code: item.product_code || '',
+      product_name: item.product_name || '',
+      qty,
+      rate,
+      amount,
+      gst_percent: gstPercent,
+      gst_amount: gstAmount,
+      total_amount: totalAmount,
+      discount,
+      grand_total: totalAmount,
+      sale_status: 'Confirmed',
+      sale_date: new Date(),
+      notes: `Auto-created from accepted quotation ${quotation.quotation_no}`,
+      created_by: req.user._id,
+    }).catch(() => {});
+  } // end if (!existingSaleForOrder)
 
   // Link the order back onto the quotation and mark it converted.
   await Quotation.updateOne({ _id: quotation._id }, { order_id: order._id, status: 'converted' }).catch(() => {});

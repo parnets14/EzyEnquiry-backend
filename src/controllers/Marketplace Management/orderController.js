@@ -858,6 +858,7 @@ async function packOrder(req, res) {
   }
 
   // 4b) Notify buyer (retailer) if marketplace order
+  if (order.buyer_company_id) {
     await Notification.create({
       company_id: order.buyer_company_id,
       user_id: order.buyer_user_id,

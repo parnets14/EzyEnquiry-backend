@@ -2,6 +2,7 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
 const Receivable   = require('../../models/Finance Management/Receivable');
 const Payable      = require('../../models/Finance Management/Payable');
 const Transaction  = require('../../models/Finance Management/Transaction');
+const Invoice      = require('../../models/Finance Management/Invoice');
 const Sale         = require('../../models/Finance Management/Sale');
 const Notification = require('../../models/System Management/Notification');
 
@@ -73,7 +74,43 @@ async function collectReceivable(req, res) {
     { new: true }
   ).lean();
 
-  if (rcv.sale_id) await Sale.findByIdAndUpdate(rcv.sale_id, { payment_status: newStatus });
+  if (rcv.sale_id) await Sale.findByIdAndUpdate(rcv.sale_id, {
+    payment_status: newStatus === 'Received' ? 'Paid' : newStatus,
+    paid_amount:    newReceived,
+    outstanding:    newOutstanding,
+  });
+
+  // Sync the linked Invoice so Invoice Management + Payment Management
+  // always show the correct paid/balance figures.
+  if (rcv.invoice_id) {
+    try {
+      const inv = await Invoice.findById(rcv.invoice_id).lean();
+      if (inv) {
+        const newInvPaid   = Math.min(newReceived, inv.grand_total);
+        const newInvBal    = Math.max(0, inv.grand_total - newInvPaid);
+        const invStatus    = newInvBal <= 0 ? 'Paid'
+          : newInvPaid > 0 ? 'Partially Paid' : 'Unpaid';
+        await Invoice.findByIdAndUpdate(rcv.invoice_id, {
+          paid_amount:    newInvPaid,
+          balance_due:    newInvBal,
+          payment_status: invStatus,
+          $push: {
+            payment_history: {
+              amount:           parseFloat(amount),
+              payment_date:     new Date(),
+              payment_mode:     mode || 'Cash',
+              reference_no:     reference || '',
+              note:             notes || 'Collected via Payment Management',
+              received_by:      req.user._id,
+              received_by_name: req.user.name || '',
+            },
+          },
+        });
+      }
+    } catch (e) {
+      console.error('[collectReceivable] Invoice sync failed:', e.message);
+    }
+  }
 
   const txn_code = await nextCode(Transaction, 'txn_code', 'TXN');
   await Transaction.create({

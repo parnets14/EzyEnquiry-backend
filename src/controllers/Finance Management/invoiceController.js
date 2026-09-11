@@ -2,6 +2,8 @@ const { sendSuccess, sendError } = require('../../utils/helpers');
 const Invoice     = require('../../models/Finance Management/Invoice');
 const Dispatch    = require('../../models/Marketplace Management/Dispatch');
 const Transaction = require('../../models/Finance Management/Transaction');
+const Receivable  = require('../../models/Finance Management/Receivable');
+const Sale        = require('../../models/Finance Management/Sale');
 const { generateOtp, storeOtp, verifyOtp } = require('../../utils/otp');
 const Employee = require('../../models/HR Management/Employee');
 const User     = require('../../models/User Management/User');
@@ -382,6 +384,43 @@ async function recordPayment(req, res) {
   }
 
   await invoice.save();
+
+  // ── Sync linked Receivable & Sale so Payment Management and Sales
+  // Management always reflect the correct outstanding balance. ────────────
+  try {
+    // The Receivable may be linked by invoice_id (new) or by sale_id (legacy).
+    const rcv = await Receivable.findOne({
+      company_id: req.user.company_id,
+      $or: [
+        { invoice_id: invoice._id },
+        { sale_id: invoice.sale_id || null },
+        { order_id: invoice.order_id || null },
+      ],
+    }).lean();
+
+    if (rcv) {
+      const newReceived    = Math.min(invoice.paid_amount, rcv.invoice_amount);
+      const newOutstanding = Math.max(0, rcv.invoice_amount - newReceived);
+      const newStatus      = newOutstanding <= 0 ? 'Received' : newReceived > 0 ? 'Partial' : 'Pending';
+      await Receivable.findByIdAndUpdate(rcv._id, {
+        received:    newReceived,
+        outstanding: newOutstanding,
+        status:      newStatus,
+      });
+    }
+
+    // Sync the linked Sale record too.
+    if (invoice.sale_id) {
+      await Sale.findByIdAndUpdate(invoice.sale_id, {
+        paid_amount:    invoice.paid_amount,
+        outstanding:    Math.max(0, invoice.grand_total - invoice.paid_amount),
+        payment_status: invoice.payment_status === 'Paid' ? 'Paid'
+          : invoice.paid_amount > 0 ? 'Partial' : 'Pending',
+      });
+    }
+  } catch (e) {
+    console.error('[recordPayment] Receivable/Sale sync failed:', e.message);
+  }
 
   // Post to the Transaction ledger so this payment shows in Accounts
   // (Company Ledger, Cash/Bank Book, Transaction History) — linked to the

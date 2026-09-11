@@ -254,10 +254,32 @@ async function getCompanyLedger(req, res) {
   toDate.setHours(23, 59, 59, 999);
 
   const [sales, purchases, received, paid, expenses] = await Promise.all([
-    Sale.find({ ...scope, sale_date: { $gte: fromDate, $lte: toDate } })
-      .select('sale_code sale_date customer_name product_name qty total_amount')
-      .sort({ sale_date: 1 }).lean(),
-    Purchase.find({ ...scope, purchase_date: { $gte: fromDate, $lte: toDate } })
+    // Sales — deduplicate by order_id: if multiple Sale records exist for the
+    // same order (legacy duplicates), use only the most recent one per order.
+    Sale.aggregate([
+      { $match: { ...scope, sale_date: { $gte: fromDate, $lte: toDate } } },
+      { $sort: { sale_date: -1 } },
+      {
+        $group: {
+          _id:          { $ifNull: ['$order_id', '$_id'] }, // group by order; standalone sales use own _id
+          sale_code:    { $first: '$sale_code' },
+          sale_date:    { $first: '$sale_date' },
+          customer_name:{ $first: '$customer_name' },
+          product_name: { $first: '$product_name' },
+          qty:          { $first: '$qty' },
+          total_amount: { $first: '$total_amount' },
+        },
+      },
+      { $sort: { sale_date: 1 } },
+    ]),
+    // Purchases from Purchase Management only — exclude auto-created marketplace
+    // procurement records (those have notes starting with 'Auto-created from
+    // accepted quotation' and use the sale rate, not the actual cost price).
+    Purchase.find({
+      ...scope,
+      purchase_date: { $gte: fromDate, $lte: toDate },
+      notes: { $not: /^Auto-created from accepted quotation/i },
+    })
       .select('purchase_code purchase_date supplier_name product_name qty total_amount')
       .sort({ purchase_date: 1 }).lean(),
     Transaction.find({ ...scope, type: 'Received', txn_date: { $gte: fromDate, $lte: toDate } })
@@ -282,10 +304,10 @@ async function getCompanyLedger(req, res) {
   const txnRefs = new Set([...received, ...paid].map(t => String(t.reference_id)).filter(Boolean));
 
   const rows = [
-    // ── Sales / Invoices raised → money IN for the company ────────────────
-    // In the Company Book: sales = Debit (Dr.) — you earned it / asset rises.
+    // ── Sales → Debit (In): money earned by the company ──────────────────
     ...sales.map(r => ({
-      date: r.sale_date, type: 'Sales', ref: r.sale_code || '', party: r.customer_name || '—',
+      date: r.sale_date, type: 'Sales',
+      ref: r.sale_code || '', party: r.customer_name || '—',
       narration: `Sold ${r.product_name || ''}${r.qty ? ` × ${r.qty}` : ''}`.trim(),
       debit: r.total_amount || 0, credit: 0,
     })),
@@ -326,16 +348,26 @@ async function getCompanyLedger(req, res) {
     ),
   ].sort((a, b) => new Date(a.date) - new Date(b.date));
 
+  // Final dedup pass — remove rows that are identical in (date, type, party, debit,
+  // credit) to catch any edge cases where two records represent the same transaction.
+  const seenKeys = new Set();
+  const dedupedRows = rows.filter(r => {
+    const d = r.date ? new Date(r.date).toDateString() : '';
+    const key = `${d}|${r.type}|${r.party}|${r.debit}|${r.credit}`;
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
+
   // Running balance: Debit (in) − Credit (out) = net position.
-  // Positive = net inflow (Dr), Negative = net outflow (Cr).
   let running = 0;
-  const ledger = rows.map(row => {
+  const ledger = dedupedRows.map(row => {
     running += (parseFloat(row.debit) || 0) - (parseFloat(row.credit) || 0);
     return { ...row, balance: running };
   });
 
-  const totalDebit  = rows.reduce((s, r) => s + (parseFloat(r.debit)  || 0), 0);
-  const totalCredit = rows.reduce((s, r) => s + (parseFloat(r.credit) || 0), 0);
+  const totalDebit  = dedupedRows.reduce((s, r) => s + (parseFloat(r.debit)  || 0), 0);
+  const totalCredit = dedupedRows.reduce((s, r) => s + (parseFloat(r.credit) || 0), 0);
 
   sendSuccess(res, {
     period: { from: fromDate, to: toDate },

@@ -329,8 +329,15 @@ async function markDelivered(req, res) {
     }
     await Order.findByIdAndUpdate(order._id, deliveredUpdates);
 
-    // Auto-create Sale if not already done (idempotent)
-    const existingSale = await Sale.findOne({ order_id: order._id }).lean();
+    // Auto-create Sale if not already done for this specific dispatch.
+    // packOrder now creates a Sale+Receivable per dispatch, so we check by
+    // dispatch_id first. Fall back to order_id check for backward compat.
+    const existingSale = await Sale.findOne({
+      $or: [
+        { dispatch_id: dispatch._id },
+        { invoice_number: dispatch.invoice_number, company_id: req.user.company_id },
+      ],
+    }).lean();
     if (!existingSale) {
       // Lookup COGS from inventory
       let cogs = 0;
@@ -373,19 +380,29 @@ async function markDelivered(req, res) {
         created_by:     req.user._id,
       });
 
-      // Auto-create Receivable
-      await Receivable.create({
-        rcv_code:       await nextRcvCode(),
-        company_id:     req.user.company_id,
-        customer_id:    order.customer_id   || null,
-        customer_name:  order.customer_name,
-        order_id:       order._id,
-        sale_id:        sale._id,
-        invoice_amount: grandTotal,
-        received:       0,
-        outstanding:    grandTotal,
-        status:         'Pending',
-      }).catch(() => {}); // non-fatal
+      // Auto-create Receivable — only if packOrder didn't already create one
+      // for this dispatch (check by dispatch invoice number).
+      const existingRcv = await Receivable.findOne({
+        company_id: req.user.company_id,
+        $or: [
+          { sale_id: sale._id },
+          { order_id: order._id },
+        ],
+      }).lean().catch(() => null);
+      if (!existingRcv) {
+        await Receivable.create({
+          rcv_code:       await nextRcvCode(),
+          company_id:     req.user.company_id,
+          customer_id:    order.customer_id   || null,
+          customer_name:  order.customer_name,
+          order_id:       order._id,
+          sale_id:        sale._id,
+          invoice_amount: grandTotal,
+          received:       0,
+          outstanding:    grandTotal,
+          status:         'Pending',
+        }).catch(() => {});
+      }
     }
 
     await Notification.create({

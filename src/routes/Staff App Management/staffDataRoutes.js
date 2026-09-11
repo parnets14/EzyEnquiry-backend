@@ -86,6 +86,7 @@ router.get('/products', async (req, res) => {
         .populate('category_id',     'name code')
         .populate('sub_category_id', 'name code')
         .populate('company_id',      'name biz_type')
+        .populate('created_by',      'name role')
         .sort({ featured: -1, new_arrival: -1, name: 1 })
         .skip(offset)
         .limit(parseInt(limit))
@@ -123,6 +124,13 @@ router.get('/products', async (req, res) => {
     });
 
     console.log(`[Staff Products] company=${req.user.company_id} total_all=${total} returning=${withStock.length}`);
+    // Debug: log each product's company biz_type + created_by_type so mismatches are visible
+    withStock.forEach(p => {
+      const cName     = p.company_id?.name     || '(no name)';
+      const cBizType  = p.company_id?.biz_type || '(no biz_type)';
+      const createdBy = p.created_by_type      || '(none)';
+      console.log(`  [Product] "${p.name}" | company="${cName}" biz_type="${cBizType}" created_by_type="${createdBy}"`);
+    });
 
     res.json({
       success: true,
