@@ -37,6 +37,9 @@ async function requireApprovedRetailer(req, res, next) {
 }
 
 async function denyRetailerErpAccess(req, res, next) {
+  // Super Admin has platform-wide access — never block them
+  if (req.user?.role === 'Super Admin') return next()
+
   if (req.user?.role === 'Retailer') {
     return res.status(403).json({ success: false, message: 'Use the retailer API for this account.' })
   }
