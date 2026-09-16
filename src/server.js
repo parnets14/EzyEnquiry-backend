@@ -81,26 +81,32 @@ const PORT = process.env.PORT || 5000
 // ── Security & Utility Middleware ────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }))
 app.use(compression())
-// In development: allow ALL origins so any phone/emulator on the LAN can connect.
-// In production: restrict to your actual frontend domain via FRONTEND_URL env var.
-const corsOrigin = process.env.NODE_ENV === 'production'
-  ? (process.env.FRONTEND_URL || 'https://your-domain.com')
-  : true // true = reflect any origin — safe for local dev
+
+const ALLOWED_ORIGINS = [
+  // ── Production frontends ──────────────────────────────────
+  'https://ezyenquiry.netlify.app',          // CRM frontend (Netlify)
+  'https://ezyenquiry-backend.onrender.com', // Render self (health checks)
+  // ── Dynamic env override (set FRONTEND_URL on Render) ────
+  process.env.FRONTEND_URL,
+  // ── Local development ─────────────────────────────────────
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:8081',
+  // ── LAN / device IPs (dev only) ───────────────────────────
+  'http://10.67.41.163:5173',
+  'http://10.67.41.163:8081',
+  'http://192.168.1.8:8081',
+  'http://192.168.1.45:5173',
+  'http://192.168.1.45:8081',
+].filter(Boolean) // remove undefined if FRONTEND_URL not set
 
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL || 'http://localhost:5173',
-    'http://localhost:3000',
-    'http://10.67.41.163:5173',   // frontend on this machine
-    'http://10.67.41.163',        // mobile device
-    'http://10.67.41.163:8081',   // React Native Metro dev server on device
-    'http://192.168.1.8',         // alternate device IP
-    'http://192.168.1.8:8081',
-    'http://192.168.1.45',        // this machine (Wi-Fi) — retailer device
-    'http://192.168.1.45:5173',
-    'http://192.168.1.45:5000',
-    'http://192.168.1.45:8081',   // Metro dev server on device
-  ],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Postman)
+    if (!origin) return callback(null, true)
+    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true)
+    callback(new Error(`CORS: origin ${origin} not allowed`))
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
