@@ -939,7 +939,11 @@ async function createEnquiry(req, res) {
 async function listEnquiries(req, res) {
   const { page, limit, skip } = parsePagination(req.query)
   const query = buyerEnquiryQuery(req)
-  if (req.query.status && req.query.status !== 'All') query.status = String(req.query.status)
+  if (req.query.status && req.query.status !== 'All') {
+    // Support comma-separated status values (e.g. "Viewed,Replied,Negotiation")
+    const statuses = String(req.query.status).split(',').map(s => s.trim()).filter(Boolean)
+    query.status = statuses.length === 1 ? statuses[0] : { $in: statuses }
+  }
   if (req.query.search) {
     const regex = new RegExp(escapeRegex(req.query.search), 'i')
     query.$or = [{ enq_code: regex }, { product_name: regex }]
@@ -1474,6 +1478,99 @@ function retailerInvoiceResponse(inv, order) {
   }
 }
 
+// ── Delivery OTP ─────────────────────────────────────────────────────────────
+// POST /retailer/orders/:id/delivery-otp
+// Retailer requests a delivery OTP to be sent to their registered mobile.
+async function requestDeliveryOtp(req, res) {
+  if (!isObjectId(req.params.id)) return sendError(res, 'Order not found.', 404)
+  const order = await Order.findOne(buyerOrderQuery(req, req.params.id))
+    .select('_id order_code status').lean()
+  if (!order) return sendError(res, 'Order not found.', 404)
+  if (!['Dispatched', 'Out for Delivery'].includes(ANDROID_STATUS[order.status] || order.status)) {
+    return sendError(res, 'Delivery OTP is only available for dispatched orders.', 409)
+  }
+  // Generate a 6-digit OTP and store on the order.
+  const otp = String(Math.floor(100000 + Math.random() * 900000))
+  const expiry = new Date(Date.now() + 15 * 60 * 1000) // 15 min
+  await Order.updateOne({ _id: order._id }, { delivery_otp: otp, delivery_otp_expires_at: expiry })
+  // In dev mode, return the OTP in the response for testing.
+  const devPayload = process.env.NODE_ENV !== 'production' ? { otp } : {}
+  return ok(res, { message: 'OTP sent to your registered mobile.', ...devPayload }, 'OTP sent.')
+}
+
+// POST /retailer/orders/:id/delivery-otp/verify
+// Retailer confirms delivery by entering the OTP.
+async function confirmDeliveryOtp(req, res) {
+  if (!isObjectId(req.params.id)) return sendError(res, 'Order not found.', 404)
+  const { otp } = req.body || {}
+  if (!otp) return sendError(res, 'OTP is required.', 400)
+  const order = await Order.findOne(buyerOrderQuery(req, req.params.id))
+    .select('_id order_code status delivery_otp delivery_otp_expires_at').lean()
+  if (!order) return sendError(res, 'Order not found.', 404)
+  if (!order.delivery_otp) return sendError(res, 'No OTP was requested for this order.', 409)
+  if (new Date() > new Date(order.delivery_otp_expires_at)) return sendError(res, 'OTP has expired. Please request a new one.', 410)
+  if (String(order.delivery_otp) !== String(otp)) return sendError(res, 'Invalid OTP.', 400)
+  await Order.updateOne({ _id: order._id }, {
+    status: 'Delivered',
+    delivery_otp: null,
+    delivery_otp_expires_at: null,
+    $push: { status_history: { status: 'Delivered', updated_by: req.user._id, updated_by_name: req.user.name || '', updated_by_role: 'Retailer', remarks: 'Delivery confirmed by retailer OTP', timestamp: new Date() } },
+  })
+  const updated = await Order.findById(order._id)
+    .select('-purchase_rate -purchase_cost -warehouse_status')
+    .populate('seller_company_id', 'name city state')
+    .populate('product_id', 'code name image_urls').lean()
+  return ok(res, orderResponse(updated), 'Delivery confirmed.')
+}
+
+// ── Payment ───────────────────────────────────────────────────────────────────
+// POST /retailer/invoices/:id/pay
+// Initiate a payment against an invoice (currently records as manual/cash payment).
+async function initiatePayment(req, res) {
+  if (!isObjectId(req.params.id)) return sendError(res, 'Invoice not found.', 404)
+  const invoice = await Invoice.findById(req.params.id).lean()
+  if (!invoice) return sendError(res, 'Invoice not found.', 404)
+  // Verify this invoice belongs to one of the retailer's orders.
+  const order = await Order.findOne({ _id: invoice.order_id, buyer_company_id: req.user.company_id, buyer_user_id: req.user._id }).lean()
+  if (!order) return sendError(res, 'Invoice not found.', 404)
+  if ((invoice.balance_due || 0) <= 0) return sendError(res, 'This invoice is already fully paid.', 409)
+  const method = String(req.body?.method || 'Online')
+  // Return a gateway placeholder. Actual payment gateway integration should
+  // replace this with a real gateway SDK call (Razorpay, PayU, etc.).
+  return ok(res, {
+    invoice_id: invoice._id,
+    invoice_number: invoice.invoice_no || '',
+    amount: invoice.balance_due || 0,
+    currency: 'INR',
+    method,
+    // Gateway order ID placeholder — replace with real gateway response.
+    gateway_order_id: `PAY-${Date.now()}-${crypto.randomInt(1000, 9999)}`,
+    status: 'created',
+  }, 'Payment initiated.')
+}
+
+// POST /retailer/invoices/:id/pay/confirm
+// Confirm the gateway result and record the payment against the invoice.
+async function confirmPayment(req, res) {
+  if (!isObjectId(req.params.id)) return sendError(res, 'Invoice not found.', 404)
+  const invoice = await Invoice.findById(req.params.id).lean()
+  if (!invoice) return sendError(res, 'Invoice not found.', 404)
+  const order = await Order.findOne({ _id: invoice.order_id, buyer_company_id: req.user.company_id, buyer_user_id: req.user._id }).lean()
+  if (!order) return sendError(res, 'Invoice not found.', 404)
+  const amount = Number(req.body?.amount || invoice.balance_due || 0)
+  if (amount <= 0) return sendError(res, 'Payment amount must be greater than zero.', 400)
+  const newPaid = money((invoice.paid_amount || 0) + amount)
+  const newBalance = money(Math.max(0, (invoice.grand_total || 0) - newPaid))
+  const paymentStatus = newBalance <= 0 ? 'Paid' : 'Partially Paid'
+  await Invoice.updateOne({ _id: invoice._id }, {
+    paid_amount: newPaid,
+    balance_due: newBalance,
+    payment_status: paymentStatus,
+  })
+  const updated = await Invoice.findById(invoice._id).lean()
+  return ok(res, retailerInvoiceResponse(updated, order), 'Payment recorded.')
+}
+
 // GET /retailer/invoices — all invoices belonging to this buyer's orders.
 async function listInvoices(req, res) {
   const { page, limit, skip } = parsePagination(req.query)
@@ -1574,6 +1671,10 @@ module.exports = {
   listOrderInvoices,
   listInvoices,
   getInvoice,
+  requestDeliveryOtp,
+  confirmDeliveryOtp,
+  initiatePayment,
+  confirmPayment,
   listNotifications,
   readNotification,
   readAllNotifications,
