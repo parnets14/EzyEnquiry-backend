@@ -59,6 +59,7 @@ const MODULE_CATALOG = [
 
   { key: 'documents', label: 'Document Management', category: 'System', actions: [action('view', 'View'), action('upload', 'Upload'), action('download', 'Download'), action('delete', 'Delete')] },
   { key: 'subscriptions', label: 'Subscription System', category: 'System', actions: [action('view', 'View'), action('change_plan', 'Upgrade / Change Plan'), action('cancel', 'Cancel')] },
+  { key: 'gradient_calc', label: 'Gradient Calculation', category: 'Tools', actions: [action('view', 'View'), action('create', 'Save Calculation'), action('delete', 'Delete Record')] },
 ]
 
 const MODULES = MODULE_CATALOG.reduce((acc, module) => {
@@ -71,12 +72,12 @@ const CATALOG_BY_KEY = Object.fromEntries(MODULE_CATALOG.map(module => [module.k
 const ROLE_MODULES = {
   'Super Admin': '*',
   'Company Owner': '*',
-  'Manager': ['dashboard', 'profile', 'notifications', 'categories', 'brands', 'products', 'suppliers', 'warehouses', 'inventory', 'stock_transfer', 'product_search', 'enquiries', 'orders', 'dispatches', 'customers', 'leads', 'followups', 'employees', 'attendance', 'reports'],
-  'Accountant': ['dashboard', 'profile', 'notifications', 'products', 'suppliers', 'purchases', 'customers', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'reports', 'documents'],
-  'Sales Executive': ['dashboard', 'profile', 'notifications', 'products', 'product_search', 'enquiries', 'orders', 'customers', 'leads', 'followups', 'quotations'],
-  'Warehouse Staff': ['dashboard', 'profile', 'notifications', 'product_search', 'warehouses', 'inventory', 'stock_transfer', 'orders', 'dispatches'],
-  'Retailer': ['dashboard', 'profile', 'notifications', 'product_search', 'enquiries', 'orders'],
-  'Wholesaler': ['dashboard', 'profile', 'notifications', 'product_search', 'products', 'inventory', 'stock_transfer', 'warehouses', 'suppliers', 'purchases', 'enquiries', 'orders', 'dispatches', 'customers', 'leads', 'followups', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'staff', 'reports', 'documents', 'subscriptions'],
+  'Manager': ['dashboard', 'profile', 'notifications', 'categories', 'brands', 'products', 'suppliers', 'warehouses', 'inventory', 'stock_transfer', 'product_search', 'enquiries', 'orders', 'dispatches', 'customers', 'leads', 'followups', 'employees', 'attendance', 'reports', 'gradient_calc'],
+  'Accountant': ['dashboard', 'profile', 'notifications', 'products', 'suppliers', 'purchases', 'customers', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'reports', 'documents', 'gradient_calc'],
+  'Sales Executive': ['dashboard', 'profile', 'notifications', 'products', 'product_search', 'enquiries', 'orders', 'customers', 'leads', 'followups', 'quotations', 'gradient_calc'],
+  'Warehouse Staff': ['dashboard', 'profile', 'notifications', 'product_search', 'warehouses', 'inventory', 'stock_transfer', 'orders', 'dispatches', 'gradient_calc'],
+  'Retailer': ['dashboard', 'profile', 'notifications', 'product_search', 'enquiries', 'orders', 'gradient_calc'],
+  'Wholesaler': ['dashboard', 'profile', 'notifications', 'product_search', 'products', 'inventory', 'stock_transfer', 'warehouses', 'suppliers', 'purchases', 'enquiries', 'orders', 'dispatches', 'customers', 'leads', 'followups', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'staff', 'reports', 'documents', 'subscriptions', 'gradient_calc'],
 }
 
 // Per-role action grants. '*' grants every catalogued action in that module.

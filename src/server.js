@@ -253,6 +253,8 @@ app.use('/api/role-permissions', authenticate, requireCompany, rolePermissionRou
 app.use('/api/masters',          authenticate, require('./routes/System Management/masterRoutes'))
 // Audit log read path (Super Admin = all; Company Owner = own company)
 app.use('/api/audit-logs',       authenticate, require('./routes/System Management/auditLogRoutes'))
+// Gradient calculation history (all authenticated users)
+app.use('/api/gradient-calc',    authenticate, require('./routes/System Management/gradientCalcRoutes'))
 
 // ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {
