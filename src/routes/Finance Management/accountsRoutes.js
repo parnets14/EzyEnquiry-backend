@@ -2,7 +2,8 @@ const express = require('express');
 const router  = express.Router();
 const ctrl    = require('../../controllers/Finance Management/accountsController');
 
-// ── Customer & Supplier Ledgers ───────────────────────────────
+// ── Ledgers ───────────────────────────────────────────────────
+router.get('/ledger/company',  ctrl.getCompanyLedger);   // ?from_date=&to_date=
 router.get('/ledger/customer', ctrl.getCustomerLedger);  // ?customer_id=xxx
 router.get('/ledger/supplier', ctrl.getSupplierLedger);  // ?supplier_id=xxx
 

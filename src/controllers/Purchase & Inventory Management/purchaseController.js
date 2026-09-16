@@ -121,9 +121,13 @@ async function updatePurchaseStatus(req, res) {
 
   // ── STOCK-IN: only when transitioning to 'Received' ──────
   if (status === 'Received' && purchase.product_id && !purchase.stock_in_done) {
+    // A Super Admin has no company_id of their own — fall back to the
+    // purchase's company so inventory always lands in the right place.
+    const companyId = req.user.company_id || purchase.company_id;
+
     // Atomic idempotency: only update if stock_in_done is still false
     const claimed = await Purchase.findOneAndUpdate(
-      { _id: req.params.id, company_id: req.user.company_id, stock_in_done: false },
+      { _id: req.params.id, company_id: companyId, stock_in_done: false },
       { $set: { stock_in_done: true } },
       { new: true }
     ).lean();
@@ -131,14 +135,14 @@ async function updatePurchaseStatus(req, res) {
     if (claimed) {
       const qtyIn   = parseFloat(purchase.qty);
       const invPrev = await Inventory.findOne(
-        { company_id: req.user.company_id, product_id: purchase.product_id, warehouse_id: purchase.warehouse_id || null }
+        { company_id: companyId, product_id: purchase.product_id, warehouse_id: purchase.warehouse_id || null }
       ).select('current_stock').lean();
       const prevStock = invPrev?.current_stock || 0;
 
       await Inventory.findOneAndUpdate(
-        { company_id: req.user.company_id, product_id: purchase.product_id, warehouse_id: purchase.warehouse_id || null },
+        { company_id: companyId, product_id: purchase.product_id, warehouse_id: purchase.warehouse_id || null },
         {
-          $setOnInsert: { company_id: req.user.company_id },
+          $setOnInsert: { company_id: companyId },
           $inc: { stock_in: qtyIn, current_stock: qtyIn, physical_stock: qtyIn, available_stock: qtyIn },
         },
         { upsert: true, new: true }
@@ -146,7 +150,7 @@ async function updatePurchaseStatus(req, res) {
 
       // Audit row in the stock movement ledger (parity with dispatch stock-out).
       await StockMovement.create({
-        company_id:     req.user.company_id,
+        company_id:     companyId,
         movement_code:  await nextMovementCode(),
         product_id:     purchase.product_id,
         product_name:   purchase.product_name || '',

@@ -8,6 +8,7 @@ const receivableSchema = new mongoose.Schema(
     customer_name:  { type: String, default: '' },
     order_id:       { type: mongoose.Schema.Types.ObjectId, ref: 'Order',    default: null },
     sale_id:        { type: mongoose.Schema.Types.ObjectId, ref: 'Sale',     default: null },
+    invoice_id:     { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice',  default: null },
     invoice_amount: { type: Number, required: true },
     received:       { type: Number, default: 0 },
     outstanding:    { type: Number, required: true },

@@ -2,9 +2,21 @@ const { sendSuccess, sendError } = require('../../utils/helpers');
 const Invoice     = require('../../models/Finance Management/Invoice');
 const Dispatch    = require('../../models/Marketplace Management/Dispatch');
 const Transaction = require('../../models/Finance Management/Transaction');
+const Receivable  = require('../../models/Finance Management/Receivable');
+const Sale        = require('../../models/Finance Management/Sale');
 const { generateOtp, storeOtp, verifyOtp } = require('../../utils/otp');
 const Employee = require('../../models/HR Management/Employee');
 const User     = require('../../models/User Management/User');
+const Customer = require('../../models/CRM Management/Customer');
+
+// Loose phone matcher — matches stored phones containing the customer's last
+// 10 digits, so "+91 98765 43212" and "9876543212" both match.
+function phoneRegexFromMobile(mobile) {
+  const digits = String(mobile || '').replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  const last10 = digits.slice(-10);
+  return new RegExp(last10.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+}
 
 // Generate the next transaction code (TXN-0001, TXN-0002, …)
 async function nextTxnCode() {
@@ -38,15 +50,35 @@ function resolvePaymentStatus(grandTotal, paidAmount) {
 
 // ── GET /api/invoices ─────────────────────────────────────────
 async function listInvoices(req, res) {
-  const { search, status, payment_status, customer_id, from_date, to_date, page = 1, limit = 20 } = req.query;
+  const { search, status, payment_status, customer_id, customer_mobile, from_date, to_date, page = 1, limit = 20 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const query = { company_id: req.user.company_id };
 
-  // Staff App + customer_id: customer detail screen wants the FULL invoice
-  // history for this customer regardless of assignment.
-  if (req.isStaffApp && customer_id) {
-    query.customer_id = customer_id;
+  // Staff App + customer: customer detail screen wants the FULL invoice
+  // history for this customer regardless of assignment. Match by customer_id
+  // and/or phone (retailer/marketplace invoices carry the phone, not the id).
+  if (req.isStaffApp && (customer_id || customer_mobile)) {
+    const custOr = [];
+    let resolvedMobile = customer_mobile;
+    if (customer_id) {
+      custOr.push({ customer_id });
+      try {
+        const cust = await Customer.findOne(
+          { _id: customer_id, company_id: req.user.company_id },
+          { mobile: 1 }
+        ).lean();
+        if (cust?.mobile) resolvedMobile = cust.mobile;
+      } catch { /* fall back to client-supplied mobile */ }
+    }
+    const phoneRx = phoneRegexFromMobile(resolvedMobile);
+    if (phoneRx) custOr.push({ customer_phone: phoneRx });
+    if (custOr.length === 1) {
+      Object.assign(query, custOr[0]);
+    } else {
+      query.$or = custOr;
+    }
+    console.log(`[Staff Invoices] customer_id=${customer_id} mobile=${resolvedMobile} matchConditions=${custOr.length}`);
   } else if (req.isStaffApp) {
     // Staff App: show invoices linked to orders assigned to this staff user,
     // PLUS any invoice where this staff recorded a payment (so their own
@@ -352,6 +384,67 @@ async function recordPayment(req, res) {
   }
 
   await invoice.save();
+
+  // ── Sync linked Receivable & Sale so Payment Management and Sales
+  // Management always reflect the correct outstanding balance. ────────────
+  try {
+    // The Receivable may be linked by invoice_id (new) or by sale_id (legacy).
+    const rcv = await Receivable.findOne({
+      company_id: req.user.company_id,
+      $or: [
+        { invoice_id: invoice._id },
+        { sale_id: invoice.sale_id || null },
+        { order_id: invoice.order_id || null },
+      ],
+    }).lean();
+
+    if (rcv) {
+      const newReceived    = Math.min(invoice.paid_amount, rcv.invoice_amount);
+      const newOutstanding = Math.max(0, rcv.invoice_amount - newReceived);
+      const newStatus      = newOutstanding <= 0 ? 'Received' : newReceived > 0 ? 'Partial' : 'Pending';
+      await Receivable.findByIdAndUpdate(rcv._id, {
+        received:    newReceived,
+        outstanding: newOutstanding,
+        status:      newStatus,
+      });
+    }
+
+    // Sync the linked Sale record too.
+    if (invoice.sale_id) {
+      await Sale.findByIdAndUpdate(invoice.sale_id, {
+        paid_amount:    invoice.paid_amount,
+        outstanding:    Math.max(0, invoice.grand_total - invoice.paid_amount),
+        payment_status: invoice.payment_status === 'Paid' ? 'Paid'
+          : invoice.paid_amount > 0 ? 'Partial' : 'Pending',
+      });
+    }
+  } catch (e) {
+    console.error('[recordPayment] Receivable/Sale sync failed:', e.message);
+  }
+
+  // Post to the Transaction ledger so this payment shows in Accounts
+  // (Company Ledger, Cash/Bank Book, Transaction History) — linked to the
+  // customer and tagged with the invoice payment id to avoid duplicates.
+  try {
+    const savedPh = invoice.payment_history[invoice.payment_history.length - 1];
+    await Transaction.create({
+      txn_code:     await nextTxnCode(),
+      company_id:   req.user.company_id,
+      type:         'Received',
+      party_name:   invoice.customer_name || '',
+      customer_id:  invoice.customer_id || null,
+      reference_id: savedPh?._id || invoice._id,
+      amount:       parseFloat(amount),
+      mode:         payment_mode || 'Cash',
+      reference:    reference_no || '',
+      notes:        note || `Payment against invoice ${invoice.invoice_no || ''}`.trim(),
+      recorded_by:  req.user._id,
+      txn_date:     payment_date || new Date(),
+    });
+  } catch (e) {
+    console.error('[recordPayment] transaction log failed:', e.message);
+  }
+
   sendSuccess(res, invoice, 'Payment recorded successfully.');
 }
 

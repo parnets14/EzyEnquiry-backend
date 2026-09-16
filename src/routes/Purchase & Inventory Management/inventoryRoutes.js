@@ -19,6 +19,7 @@ router.get('/:id',        ctrl.getInventoryItem);
 // Only Owner/Manager/Warehouse Staff can mutate inventory
 const stockRoles = ['Company Owner', 'Manager', 'Warehouse Staff', 'Super Admin'];
 
+router.patch('/:id/settings',     allow(...stockRoles), ctrl.updateInventorySettings);
 router.patch('/adjust',           allow(...stockRoles), ctrl.adjustStock);
 router.patch('/reserve',          allow(...stockRoles), ctrl.reserveStock);
 router.patch('/release-reserve',  allow(...stockRoles), ctrl.releaseReserve);

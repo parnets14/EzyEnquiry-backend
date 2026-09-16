@@ -57,6 +57,14 @@ async function performStockOut(companyId, order, dispatchId, dispatchCode, userI
   const qty = parseFloat(order.qty) || 0;
   if (qty <= 0) return;
 
+  // If stock was already deducted at booking (order creation), do NOT reduce
+  // physical/available again — just advance the dispatched counter so we never
+  // double-deduct.
+  if (order.stock_deducted) {
+    await Inventory.findByIdAndUpdate(inv._id, { $inc: { dispatched_qty: +qty } });
+    return;
+  }
+
   // Determine how much to pull from each bucket
   const fromPacked    = Math.min(qty, inv.packed_stock   || 0);
   const remainder1    = qty - fromPacked;
@@ -321,8 +329,15 @@ async function markDelivered(req, res) {
     }
     await Order.findByIdAndUpdate(order._id, deliveredUpdates);
 
-    // Auto-create Sale if not already done (idempotent)
-    const existingSale = await Sale.findOne({ order_id: order._id }).lean();
+    // Auto-create Sale if not already done for this specific dispatch.
+    // packOrder now creates a Sale+Receivable per dispatch, so we check by
+    // dispatch_id first. Fall back to order_id check for backward compat.
+    const existingSale = await Sale.findOne({
+      $or: [
+        { dispatch_id: dispatch._id },
+        { invoice_number: dispatch.invoice_number, company_id: req.user.company_id },
+      ],
+    }).lean();
     if (!existingSale) {
       // Lookup COGS from inventory
       let cogs = 0;
@@ -365,19 +380,29 @@ async function markDelivered(req, res) {
         created_by:     req.user._id,
       });
 
-      // Auto-create Receivable
-      await Receivable.create({
-        rcv_code:       await nextRcvCode(),
-        company_id:     req.user.company_id,
-        customer_id:    order.customer_id   || null,
-        customer_name:  order.customer_name,
-        order_id:       order._id,
-        sale_id:        sale._id,
-        invoice_amount: grandTotal,
-        received:       0,
-        outstanding:    grandTotal,
-        status:         'Pending',
-      }).catch(() => {}); // non-fatal
+      // Auto-create Receivable — only if packOrder didn't already create one
+      // for this dispatch (check by dispatch invoice number).
+      const existingRcv = await Receivable.findOne({
+        company_id: req.user.company_id,
+        $or: [
+          { sale_id: sale._id },
+          { order_id: order._id },
+        ],
+      }).lean().catch(() => null);
+      if (!existingRcv) {
+        await Receivable.create({
+          rcv_code:       await nextRcvCode(),
+          company_id:     req.user.company_id,
+          customer_id:    order.customer_id   || null,
+          customer_name:  order.customer_name,
+          order_id:       order._id,
+          sale_id:        sale._id,
+          invoice_amount: grandTotal,
+          received:       0,
+          outstanding:    grandTotal,
+          status:         'Pending',
+        }).catch(() => {});
+      }
     }
 
     await Notification.create({

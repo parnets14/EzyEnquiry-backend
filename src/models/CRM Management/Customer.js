@@ -15,9 +15,10 @@ const customerSchema = new mongoose.Schema(
     credit_limit: { type: Number, default: 0 },
     is_active:    { type: Boolean, default: true },
     // Who created this customer and from which app/source.
-    created_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-    created_by_name: { type: String, default: '' },
-    created_by_type: { type: String, enum: ['Admin', 'Retailer App', 'Staff App'], default: 'Admin' },
+    created_by:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    created_by_name:  { type: String, default: '' },
+    created_by_mobile:{ type: String, default: '' },
+    created_by_type:  { type: String, enum: ['Admin', 'Retailer App', 'Staff App'], default: 'Admin' },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

@@ -20,11 +20,14 @@ function productScope(req, extra = {}) {
 
 async function getCreatorType(req) {
   if (req.user?.role === 'Super Admin') return 'Admin'
+  if (req.user?.role === 'Admin')       return 'Admin'   // company admin also counts as Admin
   if (req.user?.role === 'Retailer') return 'Retailer'
   if (req.user?.role === 'Wholesaler') return 'Wholesaler'
 
   const company = await Company.findById(req.user?.company_id).select('biz_type').lean()
-  return company?.biz_type === 'Retailer' ? 'Retailer' : 'Wholesaler'
+  if (company?.biz_type === 'Retailer')   return 'Retailer'
+  if (company?.biz_type === 'Wholesaler') return 'Wholesaler'
+  return 'Admin'  // fallback: treat as Admin, not Wholesaler
 }
 
 // ── Helper: normalise FormData strings to proper JS types ─────

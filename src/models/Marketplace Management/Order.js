@@ -107,6 +107,10 @@ const orderSchema = new mongoose.Schema(
     assigned_to_name: { type: String, default: '' },
     assigned_date:    { type: Date, default: null },
     assignment_type:  { type: String, enum: ['AUTO', 'MANUAL', 'CLAIMED'], default: null },
+
+    // True once this order's quantity has been deducted from inventory (at
+    // booking time). Prevents the dispatch flow from deducting again.
+    stock_deducted:   { type: Boolean, default: false },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );
