@@ -78,4 +78,7 @@ router.post('/fcm-token', authenticate, ctrl.saveFcmToken)
 // Logout — clear FCM token
 router.post('/logout', authenticate, ctrl.logout)
 
+// Update profile (name, email)
+router.patch('/profile', authenticate, ctrl.updateProfile)
+
 module.exports = router

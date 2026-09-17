@@ -193,6 +193,9 @@ app.use('/api/wholesaler/all-quotations', authenticate, require('./routes/Wholes
 app.use('/api/wholesaler/all-products',   authenticate, require('./routes/Wholesaler Management/wholesalerAdminProductRoutes'))
 app.use('/api/wholesaler/invoices',       authenticate, requireActiveCompany, require('./routes/Wholesaler Management/wholesalerInvoiceRoutes'))
 
+// ── Wholesaler Notifications ──────────────────────────────────
+app.use('/api/wholesaler/notifications',  authenticate, requireActiveCompany, require('./routes/Wholesaler Management/wholesalerNotificationRoutes'))
+
 // ── Wholesaler Admin — cross-company visibility (Super Admin) ──
 const wholesalerAdminVis = require('./routes/Wholesaler Management/wholesalerAdminVisibilityRoutes')
 app.use('/api/wholesaler/all-orders',       authenticate, wholesalerAdminVis.orders)

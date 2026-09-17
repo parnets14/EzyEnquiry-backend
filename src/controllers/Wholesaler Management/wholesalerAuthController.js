@@ -459,6 +459,30 @@ async function approvalStatus(req, res) {
   })
 }
 
+/**
+ * PATCH /api/wholesaler/auth/profile
+ * Protected — update name, email of the logged-in wholesaler user
+ * Body: { name?, email? }
+ */
+async function updateProfile(req, res) {
+  const { name, email } = req.body
+  const update = {}
+  if (name  && String(name).trim())  update.name  = String(name).trim()
+  if (email && String(email).trim()) update.email = String(email).toLowerCase().trim()
+
+  if (Object.keys(update).length === 0)
+    return sendError(res, 'Nothing to update.', 400)
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    update,
+    { new: true }
+  ).select('-password_hash').lean()
+
+  if (!user) return sendError(res, 'User not found.', 404)
+  sendSuccess(res, { name: user.name, email: user.email }, 'Profile updated.')
+}
+
 module.exports = {
   checkMobile,
   sendOtpHandler,
@@ -470,4 +494,5 @@ module.exports = {
   approvalStatus,
   saveFcmToken,
   logout,
+  updateProfile,
 }
