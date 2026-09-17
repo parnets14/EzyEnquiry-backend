@@ -116,10 +116,10 @@ async function sendOtpHandler(req, res) {
   console.log(`  [App OTP] ${mobile} → ${otp}  [${purpose}]`)
   console.log(`${'='.repeat(44)}\n`)
 
-  // Dev/demo mode: return OTP in response for easy testing.
-  // Controlled solely by OTP_DEV_RETURN so it works even when NODE_ENV=production
-  // on hosting platforms like Render (set OTP_DEV_RETURN=false to disable for real launch).
-  const devReturn = process.env.OTP_DEV_RETURN === 'true'
+  // DEMO MODE: always return the OTP in the response so it shows on the app
+  // screen (no SMS gateway yet). Set OTP_DEV_RETURN=false on Render to disable
+  // this before a real public launch.
+  const devReturn = process.env.OTP_DEV_RETURN !== 'false'
   const data     = { sent: true }
   if (devReturn) data.otp = otp
 
