@@ -1,22 +1,12 @@
-const rateLimit = require('express-rate-limit')
+// Rate limiting DISABLED — the limiters below are no-op pass-through middleware.
+// This removes all "Too many requests" (HTTP 429) errors.
+//
+// To re-enable later, restore the express-rate-limit implementation.
 
-// Global rate limiter
-const rateLimiter = rateLimit({
-  windowMs:        parseInt(process.env.RATE_LIMIT_WINDOW_MINUTES || '15') * 60 * 1000,
-  max:             parseInt(process.env.RATE_LIMIT_MAX_REQUESTS   || '100'),
-  standardHeaders: true,
-  legacyHeaders:   false,
-  message: { success: false, message: 'Too many requests. Please try again later.' },
-})
+// No-op middleware — simply calls next() so every request passes through.
+const noopLimiter = (req, res, next) => next()
 
-// Auth endpoint limiter — uses AUTH_RATE_LIMIT_MAX from .env
-// Default 200 for dev, set to 10 in production .env
-const authRateLimiter = rateLimit({
-  windowMs:        15 * 60 * 1000,
-  max:             parseInt(process.env.AUTH_RATE_LIMIT_MAX || '200'),
-  standardHeaders: true,
-  legacyHeaders:   false,
-  message: { success: false, message: 'Too many auth attempts. Please try again in 15 minutes.' },
-})
+const rateLimiter     = noopLimiter
+const authRateLimiter = noopLimiter
 
 module.exports = { rateLimiter, authRateLimiter }
