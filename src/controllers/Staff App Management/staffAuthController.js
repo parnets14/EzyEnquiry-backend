@@ -59,10 +59,49 @@ async function findActiveEmployeeByMobile(mobile) {
 }
 
 /**
+ * Find an active staff User (added from admin panel) whose mobile matches.
+ * Returns a synthetic "employee-like" object so the rest of the flow works.
+ */
+async function findActiveUserByMobile(mobile) {
+  const digits = normaliseMobile(mobile)
+  if (digits.length !== 10) return null
+
+  const user = await User.findOne({
+    mobile: { $regex: `${digits}$` },
+    is_active: true,
+    role: { $in: STAFF_ROLES },
+  }).lean()
+
+  if (!user) return null
+  if (normaliseMobile(user.mobile) !== digits) return null
+
+  // Return a shape that looks enough like an Employee for the rest of the code.
+  return {
+    _id:        user._id,
+    user_id:    user._id,
+    name:       user.name,
+    email:      user.email || '',
+    mobile:     digits,
+    company_id: user.company_id,
+    designation: user.role,  // use role as designation
+    department:  '',
+    branch:      '',
+    is_active:   true,
+    _isUserRecord: true,     // flag so ensureStaffUser skips re-creating
+  }
+}
+
+/**
  * Ensure a login-capable User exists for this employee so the issued token
  * works with the shared `authenticate` middleware and company-scoped routes.
  */
 async function ensureStaffUser(employee) {
+  // If the "employee" came from the User table directly, just fetch the user.
+  if (employee._isUserRecord) {
+    const user = await User.findById(employee._id).lean()
+    if (user) return user
+  }
+
   const desiredRole = roleFromDesignation(employee)
 
   if (employee.user_id) {
@@ -131,7 +170,10 @@ async function staffSendOtp(req, res) {
     return sendError(res, 'Enter a valid 10-digit mobile number.')
   }
 
-  const employee = await findActiveEmployeeByMobile(digits)
+  // Check Employee table first, then fall back to User table (staff added from admin panel)
+  let employee = await findActiveEmployeeByMobile(digits)
+  if (!employee) employee = await findActiveUserByMobile(digits)
+
   if (!employee) {
     return sendError(
       res,
@@ -160,7 +202,10 @@ async function staffVerifyOtp(req, res) {
     return sendError(res, 'Mobile number and OTP are required.')
   }
 
-  const employee = await findActiveEmployeeByMobile(digits)
+  // Check Employee table first, then fall back to User table
+  let employee = await findActiveEmployeeByMobile(digits)
+  if (!employee) employee = await findActiveUserByMobile(digits)
+
   if (!employee) {
     return sendError(
       res,
@@ -183,14 +228,14 @@ async function staffVerifyOtp(req, res) {
 
   const token = signToken(user._id)
   const staff = {
-    id:           employee._id,
+    id:           employee._isUserRecord ? user._id : employee._id,
     userId:       user._id,
     empCode:      employee.emp_code || '',
     name:         employee.name,
     mobile:       normaliseMobile(employee.mobile),
-    email:        employee.email || '',
+    email:        employee.email || user.email || '',
     department:   employee.department || '',
-    designation:  employee.designation || '',
+    designation:  employee.designation || user.role || '',
     branch:       employee.branch || '',
     joinDate:     employee.join_date || null,
     role:         user.role || '',
