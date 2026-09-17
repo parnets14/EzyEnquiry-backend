@@ -129,17 +129,9 @@ async function sendOtpHandler(req, res) {
   const otp = generateOtp()
   await storeOtp(mobile, otp, purpose, 'mobile')
 
-  // Dev mode: return OTP in response for testing. In production, send via SMS.
-  if (process.env.OTP_DEV_RETURN === 'true' || process.env.NODE_ENV === 'development') {
-    return sendSuccess(res, { otp, message_sent: false, capabilities: capabilities() }, 'OTP generated (dev mode). Use this OTP to verify.')
-  }
-
-  // Production: SMS provider not configured
-  return res.status(503).json({
-    success: false,
-    message: 'SMS OTP delivery is not configured. No OTP was sent.',
-    data: { capabilities: capabilities() },
-  })
+  // Always return OTP in response (SMS not configured).
+  // When SMS is integrated, remove this block and send via SMS provider instead.
+  return sendSuccess(res, { otp, message_sent: false, capabilities: capabilities() }, 'OTP generated. Use this OTP to verify.')
 }
 
 async function verifyOtpHandler(req, res) {

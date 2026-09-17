@@ -147,11 +147,8 @@ async function staffSendOtp(req, res) {
   console.log(`  STAFF OTP for ${digits}: ${otp}  [${STAFF_OTP_PURPOSE}]`)
   console.log(`========================================\n`)
 
-  const devReturn =
-    process.env.OTP_DEV_RETURN === 'true' && process.env.NODE_ENV !== 'production'
-  const responseData = { sent: true, name: employee.name }
-  if (devReturn) responseData.otp = otp
-
+  // Always return OTP in response (SMS not configured).
+  const responseData = { sent: true, name: employee.name, otp }
   sendSuccess(res, responseData, 'OTP sent to your registered mobile.')
 }
 
