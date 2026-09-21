@@ -82,6 +82,28 @@ function parsePagination(query, defaultLimit = 20) {
   return { page, limit, skip: (page - 1) * limit }
 }
 
+// Per-company access control for ADMIN products. Non-admin (wholesaler/retailer)
+// listings are always visible. Admin products only show when shared_with_all
+// or the caller's company_code is in allowed_company_codes.
+async function buildAccessClause(req) {
+  let myCode = null
+  if (req?.user?.company_id) {
+    const company = await Company.findById(req.user.company_id).select('company_code').lean()
+    myCode = company?.company_code ? String(company.company_code).trim().toUpperCase() : null
+  }
+  const adminAllowed = [
+    { shared_with_all: true },
+    { shared_with_all: { $exists: false } }, // legacy products default visible
+  ]
+  if (myCode) adminAllowed.push({ allowed_company_codes: myCode })
+  return {
+    $or: [
+      { created_by_type: { $ne: 'Admin' } },
+      { $and: [{ created_by_type: 'Admin' }, { $or: adminAllowed }] },
+    ],
+  }
+}
+
 function isObjectId(value) {
   return mongoose.Types.ObjectId.isValid(value)
 }
@@ -370,9 +392,10 @@ async function stockMap(productIds) {
   return new Map(rows.map(row => [row._id.toString(), Math.max(row.stock || 0, 0)]))
 }
 
-async function getCatalogueProduct(id) {
+async function getCatalogueProduct(id, req = null) {
   if (!isObjectId(id)) return null
-  return Product.findOne({ _id: id, ...CATALOG_PRODUCT_QUERY })
+  const accessClause = req ? await buildAccessClause(req) : {}
+  return Product.findOne({ _id: id, ...CATALOG_PRODUCT_QUERY, ...accessClause })
     .select(PRODUCT_SELECT)
     .populate('company_id', 'company_code name city state status is_active biz_type')
     .populate('brand_id', 'name code')
@@ -485,6 +508,10 @@ async function listProducts(req, res) {
     query.sub_category_id = { $in: categoryIds }
   }
 
+  // Per-company access control for admin products (combine with any search $or).
+  const accessClause = await buildAccessClause(req)
+  query.$and = [...(query.$and || []), accessClause]
+
   const [total, products] = await Promise.all([
     Product.countDocuments(query),
     Product.find(query).select(PRODUCT_SELECT)
@@ -504,7 +531,7 @@ async function listProducts(req, res) {
 }
 
 async function getProduct(req, res) {
-  const product = await getCatalogueProduct(req.params.id)
+  const product = await getCatalogueProduct(req.params.id, req)
   if (!product) return sendError(res, 'Product not found or unavailable.', 404)
   const stocks = await stockMap([product._id])
   return ok(res, productResponse(product, stocks.get(product._id.toString()), req.user), 'Product retrieved.')

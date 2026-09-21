@@ -47,6 +47,15 @@ const productSchema = new mongoose.Schema(
     gst_percent: { type: Number, default: 18 },
     description: { type: String, default: '' },
 
+    // Category-specific dynamic fields (granite/marble/tiles/sanitaryware/blocks…).
+    // Shape is driven by the app's per-category field schema, e.g.
+    //   { granite_type, colour, slab_format, length_ft, width_ft, thickness_cm, ... }
+    attributes:  { type: mongoose.Schema.Types.Mixed, default: {} },
+    // The category "type" the attributes belong to (granite|marble|tiles|sanitaryware|blocks|other)
+    category_type: { type: String, default: '' },
+    // Opening stock captured at add time (actual live stock lives in Inventory).
+    opening_stock: { type: Number, default: 0 },
+
     // Pricing
     purchase_price:   { type: Number, default: 0 },
     landing_cost:     { type: Number, default: 0 },
@@ -71,6 +80,12 @@ const productSchema = new mongoose.Schema(
     sales_type:   { type: String, default: 'Regular Sale' },
     product_type: { type: String, default: 'Regular Product' },
     source:       { type: String, default: 'admin' },   // 'admin' | 'wholesaler'
+
+    // Per-company access control (applies to Admin-created products only)
+    // When shared_with_all is true, every wholesaler/retailer can see it.
+    // When false, only companies whose company_code is in allowed_company_codes see it.
+    shared_with_all:      { type: Boolean, default: true },
+    allowed_company_codes: { type: [String], default: [] },
 
     // Visibility flags
     new_arrival:    { type: Boolean, default: false },

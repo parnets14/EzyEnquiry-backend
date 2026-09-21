@@ -66,6 +66,15 @@ const docUpload = multer({
 // Must be before /:id to avoid route conflict
 router.get('/filters', ctrl.getFilters)
 
+// ── Taxonomy (own categories / sub-categories / brands) ──────
+router.get   ('/taxonomy',           ctrl.listTaxonomy)
+router.post  ('/categories',         ctrl.createCategory)
+router.delete('/categories/:id',     ctrl.deleteCategory)
+router.post  ('/sub-categories',     ctrl.createSubCategory)
+router.delete('/sub-categories/:id', ctrl.deleteSubCategory)
+router.post  ('/brands',             ctrl.createBrand)
+router.delete('/brands/:id',         ctrl.deleteBrand)
+
 // Wholesaler's own products (created by them)
 router.get('/mine', ctrl.listMyProducts)
 

@@ -77,7 +77,52 @@ function normaliseBody(body) {
     collection:       str(body.collection),
     sales_type:       str(body.sales_type,   'Regular Sale'),
     product_type:     str(body.product_type, 'Regular Product'),
+    ...parseAccessControl(body),
+    ...parseDynamicSpecs(body),
   }
+}
+
+// ── Helper: parse category-driven dynamic fields ─────────────
+// attributes arrives as a JSON string (FormData). category_type is a plain
+// string. Both are optional and only included when submitted.
+function parseDynamicSpecs(body) {
+  const out = {}
+  if (body.category_type !== undefined) {
+    out.category_type = String(body.category_type || '').trim()
+  }
+  if (body.attributes !== undefined) {
+    let attrs = body.attributes
+    if (typeof attrs === 'string') {
+      try { attrs = JSON.parse(attrs) } catch { attrs = {} }
+    }
+    out.attributes = (attrs && typeof attrs === 'object' && !Array.isArray(attrs)) ? attrs : {}
+  }
+  return out
+}
+
+// ── Helper: parse per-company access-control fields ───────────
+// allowed_company_codes arrives as a JSON string (FormData) or an array.
+// Codes are normalised to trimmed UPPERCASE and de-duplicated.
+function parseAccessControl(body) {
+  const out = {}
+
+  if (body.shared_with_all !== undefined) {
+    out.shared_with_all = body.shared_with_all === 'true' || body.shared_with_all === true
+  }
+
+  if (body.allowed_company_codes !== undefined) {
+    let list = body.allowed_company_codes
+    if (typeof list === 'string') {
+      try { list = JSON.parse(list) } catch { list = list.split(',') }
+    }
+    if (!Array.isArray(list)) list = list == null ? [] : [list]
+    const codes = list
+      .map(c => String(c || '').trim().toUpperCase())
+      .filter(Boolean)
+    out.allowed_company_codes = [...new Set(codes)]
+  }
+
+  return out
 }
 
 // ── Helper: null-out 'null' strings from FormData ─────────────

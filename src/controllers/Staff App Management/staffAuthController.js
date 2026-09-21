@@ -5,6 +5,7 @@ const User     = require('../../models/User Management/User')
 const Company  = require('../../models/Company Management/Company')
 const { generateOtp, storeOtp, verifyOtp } = require('../../utils/otp')
 const { sendSuccess, sendError }           = require('../../utils/helpers')
+const { computeStaffIncentive }            = require('../HR Management/employeeController')
 
 const STAFF_OTP_PURPOSE = 'staff_login'
 
@@ -227,6 +228,17 @@ async function staffVerifyOtp(req, res) {
     : null
 
   const token = signToken(user._id)
+
+  // Current-month sales + earned incentive for this staff member.
+  let incentiveSummary = { monthSales: 0, pct: 0, amount: 0, periodLabel: '' }
+  try {
+    incentiveSummary = await computeStaffIncentive(
+      employee.company_id,
+      user._id,
+      Array.isArray(employee.incentive_slabs) ? employee.incentive_slabs : [],
+    )
+  } catch { /* non-fatal — profile still returns without live incentive */ }
+
   const staff = {
     id:           employee._isUserRecord ? user._id : employee._id,
     userId:       user._id,
@@ -239,6 +251,14 @@ async function staffVerifyOtp(req, res) {
     branch:       employee.branch || '',
     joinDate:     employee.join_date || null,
     role:         user.role || '',
+    roleAccess:   employee.role_access || employee.designation || user.role || '',
+    salary:         employee.salary || 0,
+    incentiveSlabs: Array.isArray(employee.incentive_slabs) ? employee.incentive_slabs : [],
+    // Live current-month figures
+    monthSales:     incentiveSummary.monthSales || 0,
+    incentivePct:   incentiveSummary.pct || 0,
+    incentiveAmount: incentiveSummary.amount || 0,
+    incentivePeriod: incentiveSummary.periodLabel || '',
     status:       employee.is_active ? 'ACTIVE' : 'INACTIVE',
     companyId:    employee.company_id,
     companyName:  company?.name || '',
