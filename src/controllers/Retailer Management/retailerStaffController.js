@@ -97,60 +97,14 @@ function parseSalaryBreakdown(body) {
 // Keys match 1-to-1 with Staff App navigator screen groups.
 async function getAvailableModules(_req, res) {
   const modules = [
-    {
-      key: 'dashboard',
-      label: 'Dashboard',
-      description: 'Home screen with summary stats',
-      icon: 'view-dashboard-outline',
-    },
-    {
-      key: 'customers',
-      label: 'Customers',
-      description: 'View, add and manage customers',
-      icon: 'account-group-outline',
-    },
-    {
-      key: 'quotations',
-      label: 'Quotations',
-      description: 'Create and track quotations',
-      icon: 'file-document-outline',
-    },
-    {
-      key: 'orders',
-      label: 'Orders',
-      description: 'View and manage sales orders',
-      icon: 'clipboard-text-outline',
-    },
-    {
-      key: 'dispatches',
-      label: 'Dispatches',
-      description: 'Track dispatch and delivery status',
-      icon: 'truck-delivery-outline',
-    },
-    {
-      key: 'finance',
-      label: 'Finance',
-      description: 'Finance overview screen',
-      icon: 'wallet-outline',
-    },
-    {
-      key: 'invoices',
-      label: 'Invoices',
-      description: 'View invoices and payment status',
-      icon: 'receipt-outline',
-    },
-    {
-      key: 'collections',
-      label: 'Collections',
-      description: 'Record and verify cash collections',
-      icon: 'cash-multiple',
-    },
-    {
-      key: 'notifications',
-      label: 'Notifications',
-      description: 'In-app and push notifications',
-      icon: 'bell-outline',
-    },
+    { key: 'dashboard',     label: 'Dashboard',     description: 'Summary stats and quick links' },
+    { key: 'products',      label: 'Products',       description: 'Browse the product catalogue' },
+    { key: 'enquiries',     label: 'Enquiries',      description: 'Create and track enquiries' },
+    { key: 'orders',        label: 'Orders',         description: 'Place and track orders' },
+    { key: 'invoices',      label: 'Invoices',       description: 'View invoices and make payments' },
+    { key: 'customers',     label: 'Customers',      description: 'Manage retailer customers' },
+    { key: 'notifications', label: 'Notifications',  description: 'In-app and push notifications' },
+    { key: 'reports',       label: 'Reports',        description: 'Sales and order reports' },
   ];
   sendSuccess(res, { modules });
 }

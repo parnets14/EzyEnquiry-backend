@@ -581,12 +581,20 @@ function customerResponse(customer) {
 }
 
 // GET /api/retailer/customers?company_id=<owner company> — customer dropdown.
+// Returns only customers added by THIS retailer (created_by_type = 'Retailer App'
+// AND created_by = current user). Other companies' customers are never shown.
 async function listRetailerCustomers(req, res) {
   const companyId = await resolveCustomerCompanyId(req)
   if (!companyId) return sendError(res, 'A valid company is required to load customers.', 400)
 
   const { page, limit, skip } = parsePagination(req.query, 50)
-  const query = { company_id: companyId }
+
+  // Only show customers this retailer added — never show Admin/Staff customers
+  const query = {
+    company_id: companyId,
+    created_by_type: 'Retailer App',
+    created_by: req.user._id || req.user.id,
+  }
   const search = String(req.query.search || '').trim()
   if (search) {
     const regex = new RegExp(escapeRegex(search), 'i')
