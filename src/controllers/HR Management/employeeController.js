@@ -21,6 +21,30 @@ function sanitizeSlabs(raw) {
 }
 
 /**
+ * Normalise Discount Authorized Access rows from the request.
+ * Accepts [{ product_id, product_name, product_code, max_discount_pct }].
+ * Keeps only rows with a valid product_id and a max_discount_pct in 0–100.
+ * De-duplicates by product_id (last row wins).
+ */
+function sanitizeDiscountAuth(raw) {
+  if (!Array.isArray(raw)) return [];
+  const byProduct = new Map();
+  for (const r of raw) {
+    const product_id = r?.product_id;
+    if (!product_id) continue;
+    const pct = Number(r?.max_discount_pct);
+    if (!isFinite(pct) || pct < 0) continue;
+    byProduct.set(String(product_id), {
+      product_id,
+      product_name:     r?.product_name || '',
+      product_code:     r?.product_code || '',
+      max_discount_pct: Math.min(100, pct),
+    });
+  }
+  return Array.from(byProduct.values());
+}
+
+/**
  * Incentive amount for a given sales total using the threshold model:
  * apply the % of the highest slab whose sales_amount the total has reached.
  * @param {number} salesTotal
@@ -180,6 +204,7 @@ async function createEmployee(req, res) {
     join_date:   req.body.join_date   || null,
     salary:      req.body.salary      || 0,
     incentive_slabs: sanitizeSlabs(req.body.incentive_slabs),
+    discount_authorizations: sanitizeDiscountAuth(req.body.discount_authorizations),
     pan:         req.body.pan         || '',
     address:     req.body.address     || '',
   });
@@ -188,7 +213,7 @@ async function createEmployee(req, res) {
 
 /** PUT /api/employees/:id */
 async function updateEmployee(req, res) {
-  const { name, mobile, email, department, designation, role_access, branch, join_date, salary, incentive_slabs, pan, address, is_active } = req.body;
+  const { name, mobile, email, department, designation, role_access, branch, join_date, salary, incentive_slabs, discount_authorizations, pan, address, is_active } = req.body;
   const update = {};
   if (name        !== undefined) update.name        = name;
   if (mobile      !== undefined) update.mobile      = mobile;
@@ -200,6 +225,7 @@ async function updateEmployee(req, res) {
   if (join_date   !== undefined) update.join_date   = join_date   || null;
   if (salary      !== undefined) update.salary      = salary;
   if (incentive_slabs !== undefined) update.incentive_slabs = sanitizeSlabs(incentive_slabs);
+  if (discount_authorizations !== undefined) update.discount_authorizations = sanitizeDiscountAuth(discount_authorizations);
   if (pan         !== undefined) update.pan         = pan         || '';
   if (address     !== undefined) update.address     = address     || '';
   if (is_active   !== undefined) update.is_active   = is_active !== false;
@@ -220,4 +246,4 @@ async function deleteEmployee(req, res) {
   sendSuccess(res, null, 'Employee deleted.');
 }
 
-module.exports = { listEmployees, listAllEmployees, getEmployee, createEmployee, updateEmployee, deleteEmployee, getEmployeeIncentive, calcIncentive, sanitizeSlabs, computeStaffIncentive };
+module.exports = { listEmployees, listAllEmployees, getEmployee, createEmployee, updateEmployee, deleteEmployee, getEmployeeIncentive, calcIncentive, sanitizeSlabs, sanitizeDiscountAuth, computeStaffIncentive };

@@ -34,6 +34,25 @@ const employeeSchema = new mongoose.Schema(
       ],
       default: [],
     },
+
+    // Discount Authorized Access: per-item cap on the discount % this staff
+    // member is allowed to offer. Set by the wholesaler when adding/editing the
+    // staff. Shown in the staff member's profile as their "Discount Authorization
+    // Catalog" and enforced on sales. This is INTERNAL — never exposed to
+    // customers or embedded in item prices.
+    // e.g. [{ product_id, product_name, product_code, max_discount_pct: 10 }]
+    discount_authorizations: {
+      type: [
+        {
+          _id:              false,
+          product_id:       { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+          product_name:     { type: String, default: '' },
+          product_code:     { type: String, default: '' },
+          max_discount_pct: { type: Number, required: true },
+        },
+      ],
+      default: [],
+    },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

@@ -144,6 +144,38 @@ async function createSale(req, res) {
   const discount   = parseFloat(req.body.discount || 0);
   const grand_total = total_amount - discount;
 
+  // ── Discount Authorized Access enforcement ────────────────────────────────
+  // A staff member may only discount an item up to the max % the wholesaler
+  // authorized for that item. Owners/admins (no Employee record) are exempt.
+  // The cap is compared against the effective discount % of the item line
+  // (discount ₹ / item amount × 100). This authorization is internal — it is
+  // never surfaced to customers or reflected in item prices.
+  if (discount > 0 && product_id && amount > 0) {
+    const Employee = require('../../models/HR Management/Employee');
+    const staff = await Employee.findOne({
+      company_id: req.user.company_id,
+      user_id:    req.user._id,
+    }).select('discount_authorizations name').lean();
+
+    if (staff && Array.isArray(staff.discount_authorizations)) {
+      const auth = staff.discount_authorizations.find(
+        a => String(a.product_id) === String(product_id)
+      );
+      const requestedPct = (discount / amount) * 100;
+      const cap = auth ? Number(auth.max_discount_pct) : 0;
+
+      if (requestedPct > cap + 1e-6) {
+        return sendError(
+          res,
+          auth
+            ? `Discount ${requestedPct.toFixed(2)}% exceeds your authorized limit of ${cap}% for this item.`
+            : 'You are not authorized to offer a discount on this item.',
+          403
+        );
+      }
+    }
+  }
+
   // COGS: use inventory purchase_rate if product_id provided
   let cogs = 0;
   if (product_id) {
