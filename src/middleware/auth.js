@@ -1,12 +1,16 @@
-const jwt  = require('jsonwebtoken')
-const User = require('../models/User Management/User')
+const jwt          = require('jsonwebtoken')
+const User         = require('../models/User Management/User')
+const RetailerStaff = require('../models/Retailer Management/RetailerStaff')
 
 /**
- * Verify JWT and attach req.user
+ * Verify JWT and attach req.user (ERP/staff) OR req.retailerStaff (retailer staff).
+ *
+ * Token shapes:
+ *   Standard ERP/Staff  : { userId }
+ *   Retailer Staff      : { retailerStaffId, companyId, app:'retailer_staff' }
  */
 async function authenticate(req, res, next) {
   const header = req.headers['authorization']
-  // Header Bearer token OR ?token= query param (used for authenticated file-download links).
   let token = null
   if (header && header.startsWith('Bearer ')) token = header.slice(7)
   else if (req.query && req.query.token) token = String(req.query.token)
@@ -18,7 +22,31 @@ async function authenticate(req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET)
 
-    // Use UserModel (Mongoose model) directly so .select() and .lean() work
+    // ── Retailer Staff token ──────────────────────────────
+    if (decoded.app === 'retailer_staff' && decoded.retailerStaffId) {
+      const staff = await RetailerStaff.findById(decoded.retailerStaffId)
+        .select('_id company_id name mobile email designation staff_app_access salary_breakdown is_active')
+        .lean()
+
+      if (!staff)          return res.status(401).json({ success: false, message: 'Staff member not found.' })
+      if (!staff.is_active) return res.status(401).json({ success: false, message: 'Account deactivated.' })
+
+      // Attach as req.retailerStaff so downstream can distinguish this from owner logins.
+      // Also set req.user with minimal fields so shared middleware (requireCompany etc.) still works.
+      req.retailerStaff = staff
+      req.user = {
+        _id:        staff._id,
+        company_id: staff.company_id,
+        name:       staff.name,
+        mobile:     staff.mobile,
+        email:      staff.email || '',
+        role:       'RetailerStaff',   // synthetic role — not stored in User table
+        is_active:  staff.is_active,
+      }
+      return next()
+    }
+
+    // ── Standard ERP / Staff App token ───────────────────
     const user = await User.findById(decoded.userId)
       .select('_id company_id name email mobile role is_active')
       .lean()
@@ -29,7 +57,6 @@ async function authenticate(req, res, next) {
     req.user = user
     next()
   } catch (err) {
-    // JWT errors → 401, never 500
     if (
       err.name === 'JsonWebTokenError' ||
       err.name === 'TokenExpiredError' ||
