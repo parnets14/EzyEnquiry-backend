@@ -10,8 +10,36 @@
  *   GET /api/wholesaler/products/:id      — single product detail
  */
 
-const Product = require('../../models/Product Management/Product')
+const Product  = require('../../models/Product Management/Product')
+const Category = require('../../models/Product Management/Category')
+const Brand    = require('../../models/Product Management/Brand')
+const Company  = require('../../models/Company Management/Company')
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers')
+
+// Build a Mongo condition that limits which ADMIN products this company can see.
+// Non-admin products (wholesaler/retailer listings) are always allowed.
+// Admin products are shown only when shared_with_all OR the caller's
+// company_code is in allowed_company_codes.
+async function buildAccessClause(req) {
+  let myCode = null
+  if (req.user?.company_id) {
+    const company = await Company.findById(req.user.company_id).select('company_code').lean()
+    myCode = company?.company_code ? String(company.company_code).trim().toUpperCase() : null
+  }
+
+  const adminAllowed = [
+    { shared_with_all: true },
+    { shared_with_all: { $exists: false } }, // legacy products default to visible
+  ]
+  if (myCode) adminAllowed.push({ allowed_company_codes: myCode })
+
+  return {
+    $or: [
+      { created_by_type: { $ne: 'Admin' } }, // wholesaler/retailer listings unaffected
+      { $and: [{ created_by_type: 'Admin' }, { $or: adminAllowed }] },
+    ],
+  }
+}
 
 // Generate a unique product code for this company (PRD-0001 style).
 async function nextProductCode(companyId) {
@@ -19,6 +47,34 @@ async function nextProductCode(companyId) {
     .sort({ code: -1 }).lean()
   const num = last?.code ? parseInt(last.code.split('-')[1], 10) : 0
   return `PRD-${String(num + 1).padStart(4, '0')}`
+}
+
+const isRealObjectId = (v) => typeof v === 'string' && /^[a-f\d]{24}$/i.test(v)
+
+/**
+ * Resolve a category id coming from the app into a real company Category _id.
+ * The app may send a real ObjectId (own doc) OR a synthetic "master:<name>" id
+ * (a global/existing category the wholesaler picked). For master picks — or when
+ * only a name is available — find-or-create the company's own Category so the
+ * product references a valid record.
+ */
+async function resolveCategoryId(companyId, id, name, parentId = null) {
+  if (isRealObjectId(id)) return id
+  const cleanName = String(name || (typeof id === 'string' && id.startsWith('master:') ? id.split(':').pop() : '')).trim()
+  if (!cleanName) return null
+  const q = { company_id: companyId, name: new RegExp(`^${cleanName}$`, 'i'), parent_id: parentId || null }
+  let cat = await Category.findOne(q).lean()
+  if (!cat) cat = await Category.create({ company_id: companyId, name: cleanName, parent_id: parentId || null })
+  return cat._id
+}
+
+async function resolveBrandId(companyId, id, name) {
+  if (isRealObjectId(id)) return id
+  const cleanName = String(name || (typeof id === 'string' && id.startsWith('master:') ? id.split(':').pop() : '')).trim()
+  if (!cleanName) return null
+  let brand = await Brand.findOne({ company_id: companyId, name: new RegExp(`^${cleanName}$`, 'i') }).lean()
+  if (!brand) brand = await Brand.create({ company_id: companyId, name: cleanName })
+  return brand._id
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,6 +97,11 @@ async function createProduct(req, res) {
 
   const num = (v, d = 0) => (v === '' || v == null ? d : parseFloat(v))
 
+  // Resolve category/sub-category/brand ids (handles "master:" picks + name-only).
+  const categoryId    = await resolveCategoryId(companyId, b.category_id, b.category_name, null)
+  const subCategoryId = await resolveCategoryId(companyId, b.sub_category_id, b.sub_category_name, categoryId)
+  const brandId       = await resolveBrandId(companyId, b.brand_id, b.brand_name)
+
   const product = await Product.create({
     company_id:      companyId,
     created_by:      req.user._id || req.user.id,
@@ -48,9 +109,9 @@ async function createProduct(req, res) {
     code,
     name:           String(b.name).trim(),
     alias:          b.alias || '',
-    brand_id:       b.brand_id || null,
-    category_id:    b.category_id || null,
-    sub_category_id: b.sub_category_id || null,
+    brand_id:       brandId || null,
+    category_id:    categoryId || null,
+    sub_category_id: subCategoryId || null,
     brand_name:        b.brand_name || '',
     category_name:     b.category_name || '',
     sub_category_name: b.sub_category_name || '',
@@ -79,6 +140,11 @@ async function createProduct(req, res) {
     unit:        b.unit || 'Sq Ft',
     gst_percent: num(b.gst_percent, 18),
     description: b.description || '',
+
+    // Category-specific dynamic fields
+    attributes:    (b.attributes && typeof b.attributes === 'object') ? b.attributes : {},
+    category_type: b.category_type || '',
+    opening_stock: num(b.opening_stock),
 
     // Pricing
     purchase_price: num(b.purchase_price),
@@ -171,6 +237,12 @@ async function listCatalog(req, res) {
     else query.brand_name = { $regex: brand, $options: 'i' }
   }
 
+  // Per-company access control for admin products (skip for mine=true — own items).
+  if (String(req.query.mine) !== 'true') {
+    const accessClause = await buildAccessClause(req)
+    query.$and = [...(query.$and || []), accessClause]
+  }
+
   const [total, products] = await Promise.all([
     Product.countDocuments(query),
     Product.find(query)
@@ -200,10 +272,12 @@ async function listCatalog(req, res) {
 // Single product detail — read only
 // ─────────────────────────────────────────────────────────────────────────────
 async function getCatalogProduct(req, res) {
+  const accessClause = await buildAccessClause(req)
   const product = await Product.findOne({
     _id:       req.params.id,
     is_active: true,
     status:    { $ne: 'deleted' },
+    ...accessClause,
   })
     .populate('brand_id',        'name')
     .populate('category_id',     'name')
@@ -258,10 +332,16 @@ async function updateProduct(req, res) {
   ]
   textFields.forEach(f => { if (b[f] !== undefined) update[f] = b[f] })
 
-  // Reference ids
-  ;['brand_id', 'category_id', 'sub_category_id'].forEach(f => {
-    if (b[f] !== undefined) update[f] = b[f] || null
-  })
+  // Reference ids — resolve "master:" / name-only picks to real company records.
+  if (b.category_id !== undefined || b.category_name !== undefined) {
+    update.category_id = await resolveCategoryId(req.user.company_id, b.category_id, b.category_name, null)
+  }
+  if (b.sub_category_id !== undefined || b.sub_category_name !== undefined) {
+    update.sub_category_id = await resolveCategoryId(req.user.company_id, b.sub_category_id, b.sub_category_name, update.category_id || existing.category_id || null)
+  }
+  if (b.brand_id !== undefined || b.brand_name !== undefined) {
+    update.brand_id = await resolveBrandId(req.user.company_id, b.brand_id, b.brand_name)
+  }
 
   // Numeric fields
   ;['pcs_per_box', 'sqft_per_box', 'weight_per_box', 'gst_percent',
@@ -272,6 +352,11 @@ async function updateProduct(req, res) {
 
   if (Array.isArray(b.image_urls)) update.image_urls = b.image_urls
   if (b.catalog_pdf_url !== undefined) update.catalog_pdf_url = b.catalog_pdf_url
+
+  // Category-specific dynamic fields
+  if (b.attributes !== undefined && b.attributes && typeof b.attributes === 'object') update.attributes = b.attributes
+  if (b.category_type !== undefined) update.category_type = b.category_type
+  if (b.opening_stock !== undefined) update.opening_stock = num(b.opening_stock, existing.opening_stock ?? 0)
 
   // Lifecycle: active | inactive | out_of_stock | discontinued
   if (b.status !== undefined)    update.status    = b.status
@@ -485,7 +570,128 @@ async function deleteAdminProduct(req, res) {
   sendSuccess(res, { deleted: true }, 'Product deleted.')
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// TAXONOMY — wholesaler manages their OWN categories / sub-categories / brands
+// (company-scoped). Sub-category = a Category with parent_id set.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/wholesaler/products/taxonomy
+ * Returns ONLY this wholesaler's own categories (+ sub-categories) + brands.
+ * No global/default (Master) entries — the wholesaler manages their own lists.
+ */
+async function listTaxonomy(req, res) {
+  const companyId = req.user.company_id
+  if (!companyId) return sendError(res, 'No company linked to your account.', 400)
+
+  const [categories, brands] = await Promise.all([
+    Category.find({ company_id: companyId, is_active: true }).sort({ name: 1 }).lean(),
+    Brand.find({ company_id: companyId, is_active: true }).sort({ name: 1 }).lean(),
+  ])
+
+  const topLevel = categories.filter(c => !c.parent_id)
+  const subs     = categories.filter(c => c.parent_id)
+
+  const categoryTree = topLevel.map(c => ({
+    ...c,
+    sub_categories: subs.filter(s => String(s.parent_id) === String(c._id)),
+  }))
+
+  sendSuccess(res, { categories: categoryTree, brands })
+}
+
+/** POST /api/wholesaler/products/categories — { name } (top-level category). */
+async function createCategory(req, res) {
+  const companyId = req.user.company_id
+  if (!companyId) return sendError(res, 'No company linked to your account.', 400)
+  const name = String(req.body.name || '').trim()
+  if (!name) return sendError(res, 'Category name is required.')
+
+  const dup = await Category.findOne({ company_id: companyId, parent_id: null, name: new RegExp(`^${name}$`, 'i') }).lean()
+  if (dup) return sendError(res, `Category "${name}" already exists.`, 409)
+
+  const cat = await Category.create({ company_id: companyId, name, parent_id: null })
+  sendSuccess(res, cat, 'Category added.', 201)
+}
+
+/** POST /api/wholesaler/products/sub-categories — { name, category_id }. */
+async function createSubCategory(req, res) {
+  const companyId = req.user.company_id
+  if (!companyId) return sendError(res, 'No company linked to your account.', 400)
+  const name = String(req.body.name || '').trim()
+  const parentId = req.body.category_id
+  if (!name)     return sendError(res, 'Sub-category name is required.')
+  if (!parentId) return sendError(res, 'Parent category is required.')
+
+  const parent = await Category.findOne({ _id: parentId, company_id: companyId, parent_id: null }).lean()
+  if (!parent) return sendError(res, 'Parent category not found.', 404)
+
+  const dup = await Category.findOne({ company_id: companyId, parent_id: parentId, name: new RegExp(`^${name}$`, 'i') }).lean()
+  if (dup) return sendError(res, `Sub-category "${name}" already exists.`, 409)
+
+  const sub = await Category.create({ company_id: companyId, name, parent_id: parentId })
+  sendSuccess(res, sub, 'Sub-category added.', 201)
+}
+
+/** POST /api/wholesaler/products/brands — { name }. */
+async function createBrand(req, res) {
+  const companyId = req.user.company_id
+  if (!companyId) return sendError(res, 'No company linked to your account.', 400)
+  const name = String(req.body.name || '').trim()
+  if (!name) return sendError(res, 'Brand name is required.')
+
+  const dup = await Brand.findOne({ company_id: companyId, name: new RegExp(`^${name}$`, 'i') }).lean()
+  if (dup) return sendError(res, `Brand "${name}" already exists.`, 409)
+
+  const brand = await Brand.create({ company_id: companyId, name })
+  sendSuccess(res, brand, 'Brand added.', 201)
+}
+
+/** DELETE /api/wholesaler/products/categories/:id — blocked if it has sub-categories or products. */
+async function deleteCategory(req, res) {
+  const companyId = req.user.company_id
+  const cat = await Category.findOne({ _id: req.params.id, company_id: companyId }).lean()
+  if (!cat) return sendError(res, 'Category not found.', 404)
+
+  const subCount = await Category.countDocuments({ company_id: companyId, parent_id: cat._id })
+  if (subCount > 0) return sendError(res, `Delete the ${subCount} sub-categorie(s) first.`, 409)
+
+  const prodCount = await Product.countDocuments({ company_id: companyId, category_id: cat._id, status: { $ne: 'deleted' } })
+  if (prodCount > 0) return sendError(res, `This category has ${prodCount} product(s). Remove them first.`, 409)
+
+  await Category.deleteOne({ _id: cat._id, company_id: companyId })
+  sendSuccess(res, { deleted: true }, 'Category deleted.')
+}
+
+/** DELETE /api/wholesaler/products/sub-categories/:id */
+async function deleteSubCategory(req, res) {
+  const companyId = req.user.company_id
+  const sub = await Category.findOne({ _id: req.params.id, company_id: companyId, parent_id: { $ne: null } }).lean()
+  if (!sub) return sendError(res, 'Sub-category not found.', 404)
+
+  const prodCount = await Product.countDocuments({ company_id: companyId, sub_category_id: sub._id, status: { $ne: 'deleted' } })
+  if (prodCount > 0) return sendError(res, `This sub-category has ${prodCount} product(s). Remove them first.`, 409)
+
+  await Category.deleteOne({ _id: sub._id, company_id: companyId })
+  sendSuccess(res, { deleted: true }, 'Sub-category deleted.')
+}
+
+/** DELETE /api/wholesaler/products/brands/:id */
+async function deleteBrand(req, res) {
+  const companyId = req.user.company_id
+  const brand = await Brand.findOne({ _id: req.params.id, company_id: companyId }).lean()
+  if (!brand) return sendError(res, 'Brand not found.', 404)
+
+  const prodCount = await Product.countDocuments({ company_id: companyId, brand_id: brand._id, status: { $ne: 'deleted' } })
+  if (prodCount > 0) return sendError(res, `This brand has ${prodCount} product(s). Remove them first.`, 409)
+
+  await Brand.deleteOne({ _id: brand._id, company_id: companyId })
+  sendSuccess(res, { deleted: true }, 'Brand deleted.')
+}
+
 module.exports = {
   listCatalog, getCatalogProduct, getFilters, createProduct, updateProduct, uploadProductImage, uploadProductDoc, bulkImportProducts, listMyProducts, deleteProduct,
   getAdminProduct, deleteAdminProduct,
+  listTaxonomy, createCategory, createSubCategory, createBrand,
+  deleteCategory, deleteSubCategory, deleteBrand,
 }

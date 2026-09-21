@@ -51,26 +51,10 @@ const employeeSchema = new mongoose.Schema(
     designation: { type: String, default: '' },
     branch:      { type: String, default: '' },
     join_date:   { type: Date, default: null },
-
-    // Legacy flat salary field kept for backward compatibility.
-    // For new staff use salary_breakdown instead.
     salary:      { type: Number, default: 0 },
-
-    // ── Salary breakdown (new) ────────────────────────────────
-    salary_breakdown: { type: salaryBreakdownSchema, default: () => ({}) },
-
     pan:         { type: String, default: '' },
     address:     { type: String, default: '' },
     is_active:   { type: Boolean, default: true },
-
-    // ── Staff App module-level access ─────────────────────────
-    // Array of module keys the staff member can see in the app.
-    // Empty array means default access based on role (all modules).
-    // Non-empty means ONLY those listed modules are accessible.
-    staff_app_access: {
-      type: [{ type: String, enum: STAFF_APP_MODULES }],
-      default: [],
-    },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

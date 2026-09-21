@@ -6,6 +6,7 @@ const Company       = require('../../models/Company Management/Company')
 const RetailerStaff = require('../../models/Retailer Management/RetailerStaff')
 const { generateOtp, storeOtp, verifyOtp } = require('../../utils/otp')
 const { sendSuccess, sendError }           = require('../../utils/helpers')
+const { computeStaffIncentive }            = require('../HR Management/employeeController')
 
 const STAFF_OTP_PURPOSE           = 'staff_login'
 const RETAILER_STAFF_OTP_PURPOSE  = 'retailer_staff_login'
@@ -297,32 +298,21 @@ async function staffVerifyOtp(req, res) {
     : null
 
   const token = signToken(user._id)
-
-  let staffAppAccess = []
-  if (!employee._isUserRecord) {
-    const fullEmp = await Employee.findById(employee._id)
-      .select('staff_app_access salary_breakdown salary')
-      .lean()
-    staffAppAccess = fullEmp?.staff_app_access || []
-  }
-
   const staff = {
-    id:              employee._isUserRecord ? user._id : employee._id,
-    userId:          user._id,
-    empCode:         employee.emp_code || '',
-    name:            employee.name,
-    mobile:          normaliseMobile(employee.mobile),
-    email:           employee.email || user.email || '',
-    department:      employee.department || '',
-    designation:     employee.designation || user.role || '',
-    branch:          employee.branch || '',
-    joinDate:        employee.join_date || null,
-    role:            user.role || '',
-    status:          employee.is_active ? 'ACTIVE' : 'INACTIVE',
-    companyId:       employee.company_id,
-    companyName:     company?.name || '',
-    staffAppAccess,
-    accountType:     'staff',
+    id:           employee._isUserRecord ? user._id : employee._id,
+    userId:       user._id,
+    empCode:      employee.emp_code || '',
+    name:         employee.name,
+    mobile:       normaliseMobile(employee.mobile),
+    email:        employee.email || user.email || '',
+    department:   employee.department || '',
+    designation:  employee.designation || user.role || '',
+    branch:       employee.branch || '',
+    joinDate:     employee.join_date || null,
+    role:         user.role || '',
+    status:       employee.is_active ? 'ACTIVE' : 'INACTIVE',
+    companyId:    employee.company_id,
+    companyName:  company?.name || '',
   }
 
   sendSuccess(res, { token, staff }, 'OTP verified. Login successful.')
