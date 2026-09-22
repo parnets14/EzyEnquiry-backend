@@ -26,6 +26,8 @@ const PRODUCT_SELECT = [
   'tile_type', 'application', 'anti_skid', 'origin', 'manufacturer', 'barcode', 'design', 'collection',
   'pcs_per_box', 'sqft_per_box', 'weight_per_box', 'unit', 'gst_percent', 'description',
   'selling_price', 'dealer_price', 'retail_price', 'mrp', 'sales_type', 'product_type',
+  // Extra price fields the catalog/app shows (purchase + wholesale + project + landing).
+  'purchase_price', 'wholesale_rate', 'project_rate', 'landing_cost', 'min_selling_rate',
   'new_arrival', 'featured', 'online_visible', 'is_active', 'status', 'image_urls', 'created_by_type',
   'created_at', 'updated_at',
 ].join(' ')
@@ -91,10 +93,11 @@ async function buildAccessClause(req) {
     const company = await Company.findById(req.user.company_id).select('company_code').lean()
     myCode = company?.company_code ? String(company.company_code).trim().toUpperCase() : null
   }
-  const adminAllowed = [
-    { shared_with_all: true },
-    { shared_with_all: { $exists: false } }, // legacy products default visible
-  ]
+  // Admin products are HIDDEN by default. They only become visible when the
+  // admin explicitly grants access — either by sharing with everyone
+  // (shared_with_all: true) or by adding this company's code to
+  // allowed_company_codes. No access granted → not shown to anyone.
+  const adminAllowed = [{ shared_with_all: true }]
   if (myCode) adminAllowed.push({ allowed_company_codes: myCode })
   return {
     $or: [
@@ -161,6 +164,7 @@ function productResponse(product, stock = undefined, viewer = null) {
   const canEnquire = isEnquirableProduct(product) && !ownsProduct
 
   return {
+    _id: product._id,   // the app keys lists and navigates by _id
     id: product._id,
     code: product.code,
     name: product.name,
@@ -176,6 +180,24 @@ function productResponse(product, stock = undefined, viewer = null) {
       manufacturer: product.manufacturer || '', barcode: product.barcode || '',
       design: product.design || '', collection: product.collection || '',
     },
+    // Also expose spec fields at the top level — the app's ProductDetail screen
+    // reads product.size / finish / material / … directly (not the nested specs).
+    hsn_code: product.hsn_code || '',
+    size: product.size || '',
+    finish: product.finish || '',
+    material: product.material || '',
+    color: product.color || '',
+    surface: product.surface || '',
+    thickness: product.thickness || '',
+    grade: product.grade || '',
+    tile_type: product.tile_type || '',
+    application: product.application || '',
+    anti_skid: product.anti_skid || '',
+    origin: product.origin || '',
+    manufacturer: product.manufacturer || '',
+    barcode: product.barcode || '',
+    design: product.design || '',
+    collection: product.collection || '',
     packing: {
       pcs_per_box: product.pcs_per_box,
       sqft_per_box: product.sqft_per_box,
@@ -188,8 +210,25 @@ function productResponse(product, stock = undefined, viewer = null) {
       selling_price: product.selling_price,
       dealer_price: product.dealer_price,
       retail_price: product.retail_price,
+      wholesale_rate: product.wholesale_rate,
+      purchase_price: product.purchase_price,
+      project_rate: product.project_rate,
+      landing_cost: product.landing_cost,
+      min_selling_rate: product.min_selling_rate,
       mrp: product.mrp,
     },
+    // Also expose the common price fields at the top level — the mobile app's
+    // product card reads item.purchase_price / selling_price / wholesale_rate / mrp
+    // directly (not the nested `prices` object).
+    purchase_price: product.purchase_price,
+    selling_price: product.selling_price,
+    wholesale_rate: product.wholesale_rate,
+    dealer_price: product.dealer_price,
+    retail_price: product.retail_price,
+    project_rate: product.project_rate,
+    landing_cost: product.landing_cost,
+    min_selling_rate: product.min_selling_rate,
+    mrp: product.mrp,
     classification: {
       sales_type: product.sales_type || '',
       product_type: product.product_type || '',
@@ -511,6 +550,16 @@ async function listProducts(req, res) {
   // Per-company access control for admin products (combine with any search $or).
   const accessClause = await buildAccessClause(req)
   query.$and = [...(query.$and || []), accessClause]
+
+  // catalog_only=true → ONLY genuine Admin-created catalog products.
+  // (source can be 'admin' for Retailer-created items too, so gate on the
+  // authoritative created_by_type field instead of source.)
+  if (String(req.query.catalog_only) === 'true') query.created_by_type = 'Admin'
+  // mine=true → only THIS caller's own wholesaler products.
+  if (String(req.query.mine) === 'true') {
+    query.source = 'wholesaler'
+    if (req.user.company_id) query.company_id = req.user.company_id
+  }
 
   const [total, products] = await Promise.all([
     Product.countDocuments(query),

@@ -27,10 +27,9 @@ async function buildAccessClause(req) {
     myCode = company?.company_code ? String(company.company_code).trim().toUpperCase() : null
   }
 
-  const adminAllowed = [
-    { shared_with_all: true },
-    { shared_with_all: { $exists: false } }, // legacy products default to visible
-  ]
+  // Admin products are hidden until access is explicitly granted:
+  // shared_with_all: true (everyone) OR this company's code in allowed_company_codes.
+  const adminAllowed = [{ shared_with_all: true }]
   if (myCode) adminAllowed.push({ allowed_company_codes: myCode })
 
   return {
@@ -202,8 +201,11 @@ async function listCatalog(req, res) {
 
   // All active products — no company_id filter (admin products visible to all)
   const query = { is_active: true, status: { $ne: 'deleted' } }
-  // catalog_only=true → only ADMIN catalog products (exclude wholesaler-added items)
-  if (String(catalog_only) === 'true') query.source = { $ne: 'wholesaler' }
+  // catalog_only=true → ONLY genuine Admin-created catalog products.
+  // Note: source can be 'admin' for both Admin- and Retailer-created items, so
+  // filtering on source alone leaks retailer products into the catalog. Gate on
+  // created_by_type='Admin' (the authoritative creator field) instead.
+  if (String(catalog_only) === 'true') query.created_by_type = 'Admin'
   // mine=true → only THIS wholesaler's own products (source=wholesaler + own company)
   if (String(req.query.mine) === 'true') {
     query.source = 'wholesaler'
