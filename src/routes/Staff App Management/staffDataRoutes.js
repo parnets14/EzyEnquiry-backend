@@ -8,9 +8,14 @@
  *
  * Auth: the parent router already applies `authenticate` + `requireCompany`,
  * so every controller here is scoped by req.user.company_id.
+ *
+ * Access control: If the logged-in staff member's Employee record has a non-empty
+ * staff_app_access array, only those listed modules are accessible.
+ * An empty array means unrestricted access to all modules.
  */
-const express = require('express');
-const router  = express.Router();
+const express  = require('express');
+const router   = express.Router();
+const Employee = require('../../models/HR Management/Employee');
 
 const orderCtrl        = require('../../controllers/Marketplace Management/orderController');
 const dispatchCtrl     = require('../../controllers/Marketplace Management/dispatchController');
@@ -19,43 +24,92 @@ const customerCtrl     = require('../../controllers/CRM Management/customerContr
 const quotationCtrl    = require('../../controllers/Finance Management/quotationController');
 const notificationCtrl = require('../../controllers/System Management/notificationController');
 
-// Mark every request through this router as a staff-app request.
-// This lets shared controllers (e.g. listOrders) know to apply
-// staff-specific filters (only show orders assigned to req.user).
-router.use((req, _res, next) => {
+// ── Step 1: Mark every request as staff-app + load access list ──
+// Fetches the employee's staff_app_access once per request and caches
+// it on req so individual module guards can read it cheaply.
+router.use(async (req, res, next) => {
   req.isStaffApp = true;
+  req.staffAppAccess = []; // default = all access
+
+  try {
+    // ── RetailerStaff login (token has app:'retailer_staff') ──
+    if (req.retailerStaff) {
+      const rs = req.retailerStaff;
+      if (Array.isArray(rs.staff_app_access) && rs.staff_app_access.length > 0) {
+        req.staffAppAccess = rs.staff_app_access;
+      }
+      req.staffEmployee = {
+        _id:              rs._id,
+        company_id:       rs.company_id,
+        salary_breakdown: rs.salary_breakdown || {},
+        staff_app_access: rs.staff_app_access || [],
+        _isRetailerStaff: true,
+      };
+      return next();
+    }
+
+    // ── HR Employee login (standard Staff App) ─────────────
+    const emp = await Employee.findOne({
+      company_id: req.user.company_id,
+      user_id: req.user._id,
+    }).select('staff_app_access salary_breakdown salary').lean();
+
+    if (emp && Array.isArray(emp.staff_app_access) && emp.staff_app_access.length > 0) {
+      req.staffAppAccess = emp.staff_app_access;
+    }
+    req.staffEmployee = emp || null;
+  } catch (_err) {
+    // Non-fatal — fall back to full access
+  }
   next();
 });
 
-// ── Sales Orders (read) ──────────────────────────────────────
-router.get('/orders',     orderCtrl.listOrders);
-router.get('/orders/:id', orderCtrl.getOrder);
+// ── Step 2: Module guard factory ────────────────────────────────
+// Returns a middleware that blocks access to a module key
+// if the staff member's access list is non-empty AND doesn't include it.
+function requireModule(moduleKey) {
+  return (req, res, next) => {
+    const access = req.staffAppAccess;
+    // Empty means unrestricted
+    if (!access || access.length === 0) return next();
+    if (access.includes(moduleKey)) return next();
+    return res.status(403).json({
+      success: false,
+      message: `Access denied. You do not have access to the ${moduleKey} module.`,
+      module: moduleKey,
+    });
+  };
+}
 
-// ── Dispatches (read) ────────────────────────────────────────
-router.get('/dispatches',     dispatchCtrl.listDispatches);
-router.get('/dispatches/:id', dispatchCtrl.getDispatch);
+// ── Sales Orders ─────────────────────────────────────────────
+router.get('/orders',     requireModule('orders'), orderCtrl.listOrders);
+router.get('/orders/:id', requireModule('orders'), orderCtrl.getOrder);
 
-// ── Invoices (read + record payment + verify collection OTP) ─
-router.get ('/invoices',                              invoiceCtrl.listInvoices);
-router.get ('/invoices/summary',                      invoiceCtrl.getInvoiceSummary);
-router.get ('/invoices/:id',                          invoiceCtrl.getInvoice);
-router.post('/invoices/:id/payment',                  invoiceCtrl.recordPayment);
-router.post('/invoices/:id/payment/:phId/verify',     invoiceCtrl.verifyPayment);
+// ── Dispatches ───────────────────────────────────────────────
+router.get('/dispatches',     requireModule('dispatches'), dispatchCtrl.listDispatches);
+router.get('/dispatches/:id', requireModule('dispatches'), dispatchCtrl.getDispatch);
 
-// ── Customers (list + create) ─────────────────────────────────
-router.get ('/customers',     customerCtrl.listCustomers);
-router.get ('/customers/:id', customerCtrl.getCustomer);
-router.post('/customers',     customerCtrl.createCustomer);
+// ── Invoices (finance module covers invoices + payments) ─────
+router.get ('/invoices',                           requireModule('finance'), invoiceCtrl.listInvoices);
+router.get ('/invoices/summary',                   requireModule('finance'), invoiceCtrl.getInvoiceSummary);
+router.get ('/invoices/:id',                       requireModule('finance'), invoiceCtrl.getInvoice);
+router.post('/invoices/:id/payment',               requireModule('finance'), invoiceCtrl.recordPayment);
+router.post('/invoices/:id/payment/:phId/verify',  requireModule('finance'), invoiceCtrl.verifyPayment);
 
-// ── Quotations (list + create) ────────────────────────────────
-router.get ('/quotations',     quotationCtrl.listQuotations);
-router.get ('/quotations/:id', quotationCtrl.getQuotation);
-router.post('/quotations',     quotationCtrl.createQuotation);
+// ── Customers ────────────────────────────────────────────────
+router.get ('/customers',     requireModule('customers'), customerCtrl.listCustomers);
+router.get ('/customers/:id', requireModule('customers'), customerCtrl.getCustomer);
+router.post('/customers',     requireModule('customers'), customerCtrl.createCustomer);
+
+// ── Quotations ───────────────────────────────────────────────
+router.get ('/quotations',     requireModule('quotations'), quotationCtrl.listQuotations);
+router.get ('/quotations/:id', requireModule('quotations'), quotationCtrl.getQuotation);
+router.post('/quotations',     requireModule('quotations'), quotationCtrl.createQuotation);
 
 // ── Products (catalog — read-only search) ─────────────────────
 // Returns all active, non-deleted products with full brand/category population.
 // No company filter — staff can see all products to create quotations.
-router.get('/products', async (req, res) => {
+router.get('/products', requireModule('products'), async (req, res) => {
   try {
     const Product  = require('../../models/Product Management/Product');
     const { paginate } = require('../../utils/helpers');
@@ -147,9 +201,135 @@ router.get('/products', async (req, res) => {
 });
 
 // ── Notifications (scoped to company user) ────────────────────
-router.get   ('/notifications',              notificationCtrl.listNotifications);
-router.patch ('/notifications/mark-all-read', notificationCtrl.markAllNotificationsRead);
-router.patch ('/notifications/:id/read',     notificationCtrl.markNotificationRead);
-router.delete('/notifications/:id',          notificationCtrl.deleteNotification);
+router.get   ('/notifications',               requireModule('notifications'), notificationCtrl.listNotifications);
+router.patch ('/notifications/mark-all-read', requireModule('notifications'), notificationCtrl.markAllNotificationsRead);
+router.patch ('/notifications/:id/read',      requireModule('notifications'), notificationCtrl.markNotificationRead);
+router.delete('/notifications/:id',           requireModule('notifications'), notificationCtrl.deleteNotification);
+
+// ── My Salary (staff views own payslips + breakdown) ─────────
+router.get('/my-salary', requireModule('salary'), async (req, res) => {
+  try {
+    const SalaryRecord = require('../../models/HR Management/SalaryRecord');
+    const { month, year, page = 1, limit = 12 } = req.query;
+    const emp = req.staffEmployee;
+
+    if (!emp) {
+      return res.status(404).json({ success: false, message: 'Employee record not found for your account.' });
+    }
+
+    const query = { company_id: req.user.company_id, employee_id: emp._id };
+    if (month) query.month = parseInt(month);
+    if (year)  query.year  = parseInt(year);
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const [total, records] = await Promise.all([
+      SalaryRecord.countDocuments(query),
+      SalaryRecord.find(query)
+        .sort({ year: -1, month: -1 })
+        .skip(offset)
+        .limit(parseInt(limit))
+        .lean(),
+    ]);
+
+    // Attach the salary breakdown config so the app can display the structure
+    const breakdown = emp.salary_breakdown || {};
+
+    res.json({
+      success: true,
+      data: {
+        salary_breakdown: {
+          fixed_salary:         breakdown.fixed_salary         ?? emp.salary ?? 0,
+          incentive_type:       breakdown.incentive_type       ?? 'none',
+          incentive_value:      breakdown.incentive_value      ?? 0,
+          sales_percentage:     breakdown.sales_percentage     ?? 0,
+          discount_access:      breakdown.discount_access      ?? false,
+          max_discount_percent: breakdown.max_discount_percent ?? 0,
+          notes:                breakdown.notes                ?? '',
+        },
+        salary_records: records,
+        total,
+        page: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to load salary.' });
+  }
+});
+
+// ── My Attendance (staff views own records) ──────────────────
+router.get('/my-attendance', requireModule('attendance'), async (req, res) => {
+  try {
+    const Attendance = require('../../models/HR Management/Attendance');
+    const emp = req.staffEmployee;
+
+    if (!emp) {
+      return res.status(404).json({ success: false, message: 'Employee record not found for your account.' });
+    }
+
+    const { month, year, page = 1, limit = 31 } = req.query;
+    const query = { company_id: req.user.company_id, employee_id: emp._id };
+
+    if (month && year) {
+      const from = new Date(parseInt(year), parseInt(month) - 1, 1);
+      const to   = new Date(parseInt(year), parseInt(month), 1);
+      query.date = { $gte: from, $lt: to };
+    }
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const [total, records] = await Promise.all([
+      Attendance.countDocuments(query),
+      Attendance.find(query)
+        .sort({ date: -1 })
+        .skip(offset)
+        .limit(parseInt(limit))
+        .lean(),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        attendance: records,
+        total,
+        page: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to load attendance.' });
+  }
+});
+
+// ── My Profile / Discount Access ────────────────────────────
+// Returns the logged-in staff member's own profile including salary breakdown.
+// The app uses discount_access + max_discount_percent when creating quotations.
+router.get('/my-profile', async (req, res) => {
+  try {
+    const emp = req.staffEmployee;
+    if (!emp) {
+      return res.status(404).json({ success: false, message: 'Employee record not found for your account.' });
+    }
+
+    const breakdown = emp.salary_breakdown || {};
+    res.json({
+      success: true,
+      data: {
+        employee_id:      emp._id,
+        salary_breakdown: {
+          fixed_salary:         breakdown.fixed_salary         ?? emp.salary ?? 0,
+          incentive_type:       breakdown.incentive_type       ?? 'none',
+          incentive_value:      breakdown.incentive_value      ?? 0,
+          sales_percentage:     breakdown.sales_percentage     ?? 0,
+          discount_access:      breakdown.discount_access      ?? false,
+          max_discount_percent: breakdown.max_discount_percent ?? 0,
+          notes:                breakdown.notes                ?? '',
+        },
+        staff_app_access: emp.staff_app_access || [],
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to load profile.' });
+  }
+});
 
 module.exports = router;

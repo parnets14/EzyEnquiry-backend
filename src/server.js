@@ -12,6 +12,9 @@ const path        = require('path')
 const connectDB = require('./config/database')
 const { MODULES, moduleAccess } = require('./config/permissions')
 
+// ── Models (ensure all Mongoose models are registered at startup) ────────────
+require('./models/index')
+
 // ── Utils ────────────────────────────────────────────────────
 const { logger }                     = require('./utils/logger')
 const { seedSuperAdmin, healOrphanUsers, seedMasters } = require('./utils/seeder')
@@ -73,6 +76,7 @@ const retailerAuthRoutes   = require('./routes/Retailer Management/retailerAuthR
 const retailerRoutes       = require('./routes/Retailer Management/retailerRoutes')
 const staffAuthRoutes      = require('./routes/Staff App Management/staffAuthRoutes')
 const staffDataRoutes      = require('./routes/Staff App Management/staffDataRoutes')
+const staffManagementRoutes = require('./routes/Staff App Management/staffManagementRoutes')
 
 // ────────────────────────────────────────────────────────────
 const app  = express()
@@ -156,6 +160,8 @@ app.use('/api/auth',              authRoutes)
 app.use('/api/auth/staff',        staffAuthRoutes)
 // Staff App data (company-scoped Sales Orders + Invoices + record payment).
 app.use('/api/staff',             authenticate, requireCompany, staffDataRoutes)
+// Staff App management — admin adds/edits staff, sets access + salary breakdown.
+app.use('/api/staff-management',  authenticate, requireCompany, staffManagementRoutes)
 app.use('/api/wholesaler/auth',   wholesalerAuthRoutes)
 app.use('/api/wholesaler',        authenticate, requireApprovedSeller, wholesalerCatalogRoutes)
 app.use('/api/retailer/auth',     retailerAuthRoutes)
@@ -172,6 +178,7 @@ const ERP_ROUTE_PREFIXES = [
   '/api/payments', '/api/accounts', '/api/profit-loss', '/api/quotations', '/api/invoices',
   '/api/employees', '/api/employee-master', '/api/attendance', '/api/salary',
   '/api/reports', '/api/notifications', '/api/documents', '/api/subscriptions', '/api/profile',
+  '/api/staff-management',
 ]
 app.use(ERP_ROUTE_PREFIXES, authenticate, denyRetailerErpAccess, auditLogger)
 

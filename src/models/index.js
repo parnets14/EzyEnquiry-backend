@@ -30,6 +30,7 @@ const Designation   = require('./HR Management/Designation')
 const Employee      = require('./HR Management/Employee')
 const Attendance    = require('./HR Management/Attendance')
 const SalaryRecord  = require('./HR Management/SalaryRecord')
+const RetailerStaff = require('./Retailer Management/RetailerStaff')
 const Notification  = require('./System Management/Notification')
 const Counter       = require('./System Management/Counter')
 
@@ -66,6 +67,7 @@ module.exports = {
   Employee,
   Attendance,
   SalaryRecord,
+  RetailerStaff,
   Notification,
   Counter,
 }

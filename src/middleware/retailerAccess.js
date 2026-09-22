@@ -9,7 +9,9 @@ async function loadCompany(req) {
 
 async function requireRetailerIdentity(req, res, next) {
   const company = await loadCompany(req)
-  if (!company || req.user?.role !== 'Retailer' || company.biz_type !== 'Retailer') {
+  // Allow both the Retailer owner and RetailerStaff (who have a synthetic role)
+  const isRetailerRole = req.user?.role === 'Retailer' || req.user?.role === 'RetailerStaff'
+  if (!company || !isRetailerRole || company.biz_type !== 'Retailer') {
     return res.status(403).json({ success: false, message: 'Retailer account required.' })
   }
   if (company.is_active === false) {
@@ -20,7 +22,8 @@ async function requireRetailerIdentity(req, res, next) {
 
 async function requireApprovedRetailer(req, res, next) {
   const company = await loadCompany(req)
-  if (!company || req.user?.role !== 'Retailer' || company.biz_type !== 'Retailer') {
+  const isRetailerRole = req.user?.role === 'Retailer' || req.user?.role === 'RetailerStaff'
+  if (!company || !isRetailerRole || company.biz_type !== 'Retailer') {
     return res.status(403).json({ success: false, message: 'Retailer account required.' })
   }
   if (company.is_active === false) {
@@ -40,7 +43,7 @@ async function denyRetailerErpAccess(req, res, next) {
   // Super Admin has platform-wide access — never block them
   if (req.user?.role === 'Super Admin') return next()
 
-  if (req.user?.role === 'Retailer') {
+  if (req.user?.role === 'Retailer' || req.user?.role === 'RetailerStaff') {
     return res.status(403).json({ success: false, message: 'Use the retailer API for this account.' })
   }
   const company = await loadCompany(req)

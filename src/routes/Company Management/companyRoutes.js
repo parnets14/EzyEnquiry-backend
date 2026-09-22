@@ -6,7 +6,9 @@ const { authorize } = require('../../middleware/auth');
 
 router.get   ('/',                ctrl.listCompanies);
 // KYC documents — signed-URL list (admins only). Must be before '/:id'.
-router.get   ('/:id/documents',   authorize('Super Admin', 'Company Owner'), docCtrl.getCompanyDocuments);
+router.get   ('/:id/documents',        authorize('Super Admin', 'Company Owner'), docCtrl.getCompanyDocuments);
+// Stream a single KYC document inline (gst | pan | address | biz). Before '/:id'.
+router.get   ('/:id/documents/:type',  authorize('Super Admin', 'Company Owner'), ctrl.getCompanyDocument);
 router.get   ('/:id',             ctrl.getCompany);
 router.post  ('/',                ctrl.createCompany);
 router.put   ('/:id',             ctrl.updateCompany);

@@ -1,13 +1,15 @@
 const jwt = require('jsonwebtoken')
 
-const Employee = require('../../models/HR Management/Employee')
-const User     = require('../../models/User Management/User')
-const Company  = require('../../models/Company Management/Company')
+const Employee      = require('../../models/HR Management/Employee')
+const User          = require('../../models/User Management/User')
+const Company       = require('../../models/Company Management/Company')
+const RetailerStaff = require('../../models/Retailer Management/RetailerStaff')
 const { generateOtp, storeOtp, verifyOtp } = require('../../utils/otp')
 const { sendSuccess, sendError }           = require('../../utils/helpers')
 const { computeStaffIncentive }            = require('../HR Management/employeeController')
 
-const STAFF_OTP_PURPOSE = 'staff_login'
+const STAFF_OTP_PURPOSE           = 'staff_login'
+const RETAILER_STAFF_OTP_PURPOSE  = 'retailer_staff_login'
 
 // Valid staff roles (must match config/permissions.js ROLE_MODULES keys).
 const STAFF_ROLES = ['Manager', 'Accountant', 'Sales Executive', 'Warehouse Staff']
@@ -36,6 +38,15 @@ function signToken(userId) {
   return jwt.sign({ userId }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   })
+}
+
+/** Sign a token for a RetailerStaff login (no User record needed). */
+function signRetailerStaffToken(staffId, companyId) {
+  return jwt.sign(
+    { retailerStaffId: String(staffId), companyId: String(companyId), app: 'retailer_staff' },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+  )
 }
 
 /** Normalise any input to the last 10 digits of a mobile number. */
@@ -164,6 +175,18 @@ async function ensureStaffUser(employee) {
   return user
 }
 
+/**
+ * Find an active RetailerStaff record by mobile.
+ * Returns the record with a _isRetailerStaff flag so callers know the source.
+ */
+async function findActiveRetailerStaffByMobile(mobile) {
+  const digits = normaliseMobile(mobile)
+  if (digits.length !== 10) return null
+  const staff = await RetailerStaff.findOne({ mobile: digits, is_active: true }).lean()
+  if (!staff) return null
+  return { ...staff, _isRetailerStaff: true }
+}
+
 /** POST /api/auth/staff/send-otp — body: { mobile } */
 async function staffSendOtp(req, res) {
   const digits = normaliseMobile(req.body.mobile)
@@ -171,9 +194,10 @@ async function staffSendOtp(req, res) {
     return sendError(res, 'Enter a valid 10-digit mobile number.')
   }
 
-  // Check Employee table first, then fall back to User table (staff added from admin panel)
+  // 1. HR Employee table → 2. ERP User table → 3. RetailerStaff table
   let employee = await findActiveEmployeeByMobile(digits)
   if (!employee) employee = await findActiveUserByMobile(digits)
+  if (!employee) employee = await findActiveRetailerStaffByMobile(digits)
 
   if (!employee) {
     return sendError(
@@ -183,14 +207,16 @@ async function staffSendOtp(req, res) {
     )
   }
 
+  // Use a purpose key specific to RetailerStaff logins so OTPs never cross-match
+  const purpose = employee._isRetailerStaff ? RETAILER_STAFF_OTP_PURPOSE : STAFF_OTP_PURPOSE
+
   const otp = generateOtp()
-  await storeOtp(digits, otp, STAFF_OTP_PURPOSE, 'mobile')
+  await storeOtp(digits, otp, purpose, 'mobile')
 
   console.log(`\n========================================`)
-  console.log(`  STAFF OTP for ${digits}: ${otp}  [${STAFF_OTP_PURPOSE}]`)
+  console.log(`  STAFF OTP for ${digits}: ${otp}  [${purpose}]`)
   console.log(`========================================\n`)
 
-  // Always return OTP in response (SMS not configured).
   const responseData = { sent: true, name: employee.name, otp }
   sendSuccess(res, responseData, 'OTP sent to your registered mobile.')
 }
@@ -203,9 +229,10 @@ async function staffVerifyOtp(req, res) {
     return sendError(res, 'Mobile number and OTP are required.')
   }
 
-  // Check Employee table first, then fall back to User table
+  // 1. HR Employee → 2. ERP User → 3. RetailerStaff
   let employee = await findActiveEmployeeByMobile(digits)
   if (!employee) employee = await findActiveUserByMobile(digits)
+  if (!employee) employee = await findActiveRetailerStaffByMobile(digits)
 
   if (!employee) {
     return sendError(
@@ -215,11 +242,54 @@ async function staffVerifyOtp(req, res) {
     )
   }
 
-  const result = await verifyOtp(digits, otpVal, STAFF_OTP_PURPOSE)
+  // Use matching OTP purpose key
+  const purpose = employee._isRetailerStaff ? RETAILER_STAFF_OTP_PURPOSE : STAFF_OTP_PURPOSE
+
+  const result = await verifyOtp(digits, otpVal, purpose)
   if (!result.valid) {
     return sendError(res, result.reason, 400)
   }
 
+  // ── RetailerStaff login path ──────────────────────────────
+  if (employee._isRetailerStaff) {
+    await RetailerStaff.findByIdAndUpdate(employee._id, { last_login: new Date() })
+
+    const company = employee.company_id
+      ? await Company.findById(employee.company_id).select('name status is_active').lean()
+      : null
+
+    if (!company || company.is_active === false) {
+      return sendError(res, 'The associated retailer company is inactive. Contact support.', 403)
+    }
+
+    const token = signRetailerStaffToken(employee._id, employee.company_id)
+    const breakdown = employee.salary_breakdown || {}
+
+    const staffData = {
+      id:             employee._id,
+      name:           employee.name,
+      mobile:         employee.mobile,
+      email:          employee.email || '',
+      designation:    employee.designation || '',
+      companyId:      employee.company_id,
+      companyName:    company?.name || '',
+      // Modules this staff can see — empty = all modules
+      staffAppAccess: employee.staff_app_access || [],
+      salaryBreakdown: {
+        fixedSalary:        breakdown.fixed_salary         ?? 0,
+        incentiveType:      breakdown.incentive_type       ?? 'none',
+        incentiveValue:     breakdown.incentive_value      ?? 0,
+        salesPercentage:    breakdown.sales_percentage     ?? 0,
+        discountAccess:     breakdown.discount_access      ?? false,
+        maxDiscountPercent: breakdown.max_discount_percent ?? 0,
+      },
+      accountType: 'retailer_staff',
+    }
+
+    return sendSuccess(res, { token, staff: staffData }, 'OTP verified. Login successful.')
+  }
+
+  // ── HR Employee / ERP User login path (existing behaviour) ───
   const user = await ensureStaffUser(employee)
   await User.findByIdAndUpdate(user._id, { last_login: new Date() })
 
@@ -228,17 +298,6 @@ async function staffVerifyOtp(req, res) {
     : null
 
   const token = signToken(user._id)
-
-  // Current-month sales + earned incentive for this staff member.
-  let incentiveSummary = { monthSales: 0, pct: 0, amount: 0, periodLabel: '' }
-  try {
-    incentiveSummary = await computeStaffIncentive(
-      employee.company_id,
-      user._id,
-      Array.isArray(employee.incentive_slabs) ? employee.incentive_slabs : [],
-    )
-  } catch { /* non-fatal — profile still returns without live incentive */ }
-
   const staff = {
     id:           employee._isUserRecord ? user._id : employee._id,
     userId:       user._id,
@@ -251,14 +310,6 @@ async function staffVerifyOtp(req, res) {
     branch:       employee.branch || '',
     joinDate:     employee.join_date || null,
     role:         user.role || '',
-    roleAccess:   employee.role_access || employee.designation || user.role || '',
-    salary:         employee.salary || 0,
-    incentiveSlabs: Array.isArray(employee.incentive_slabs) ? employee.incentive_slabs : [],
-    // Live current-month figures
-    monthSales:     incentiveSummary.monthSales || 0,
-    incentivePct:   incentiveSummary.pct || 0,
-    incentiveAmount: incentiveSummary.amount || 0,
-    incentivePeriod: incentiveSummary.periodLabel || '',
     status:       employee.is_active ? 'ACTIVE' : 'INACTIVE',
     companyId:    employee.company_id,
     companyName:  company?.name || '',
