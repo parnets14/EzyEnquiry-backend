@@ -10,7 +10,7 @@ const Company      = require('../../models/Company Management/Company');
 const User         = require('../../models/User Management/User');
 const Inventory    = require('../../models/Purchase & Inventory Management/Inventory');
 const StockMovement = require('../../models/Purchase & Inventory Management/StockMovement');
-const { deductStockForOrder, restoreStockForOrder } = require('../Purchase & Inventory Management/inventoryController');
+const { deductStockForOrder, restoreStockForOrder, reserveStockForOrder, releaseReserveForOrder, checkAndNotifyStockLevels } = require('../Purchase & Inventory Management/inventoryController');
 const { notifyRetailer } = require('../../utils/pushHelper');
 
 const round2 = n => Math.round((Number(n) || 0) * 100) / 100;
@@ -293,8 +293,11 @@ async function createOrderFromEnquiry(req, res) {
     reference_id: order._id,
   });
 
-  const deductedFromEnq = await deductStockForOrder(order, req.user._id);
-  if (deductedFromEnq) await Order.findByIdAndUpdate(order._id, { stock_deducted: true });
+  // NOTE: Stock is no longer deducted at order creation (booking).
+  // Per workflow: Available → Reserved happens at "Order Accepted" (updateOrderStatus).
+  // Legacy orders kept backward-compatible via stock_deducted flag (still false here).
+  // const deductedFromEnq = await deductStockForOrder(order, req.user._id);
+  // if (deductedFromEnq) await Order.findByIdAndUpdate(order._id, { stock_deducted: true });
 
   sendSuccess(res, order, 'Order created.', 201);
 }
@@ -374,9 +377,11 @@ async function createOrder(req, res) {
     );
   }
 
-  // Booking deducts stock immediately so availability drops across all apps.
-  const deducted = await deductStockForOrder(order, req.user._id);
-  if (deducted) await Order.findByIdAndUpdate(order._id, { stock_deducted: true });
+  // NOTE: Stock is no longer deducted at order creation (booking).
+  // Per workflow: Available → Reserved happens at "Order Accepted" (updateOrderStatus).
+  // Legacy orders kept backward-compatible via stock_deducted flag (still false here).
+  // const deducted = await deductStockForOrder(order, req.user._id);
+  // if (deducted) await Order.findByIdAndUpdate(order._id, { stock_deducted: true });
 
   await Notification.create({
     company_id:   req.user.company_id,
@@ -401,6 +406,26 @@ async function updateOrderStatus(req, res) {
   const allowed = VALID_TRANSITIONS[order.status] || [];
   if (!allowed.includes(status)) {
     return sendError(res, `Cannot transition from "${order.status}" to "${status}". Allowed: ${allowed.join(', ') || 'none'}`, 422);
+  }
+
+  // ── PRE-COMMIT: Reserve stock BEFORE accepting an order ─────────────────
+  // Workflow Decision Point #1: Available → Reserved = on Order Accepted.
+  // If stock is insufficient, REJECT the transition and return 422.
+  let reserveResult = null;
+  if (order.status === 'New' && status === 'Accepted') {
+    reserveResult = await reserveStockForOrder({
+      companyId:   req.user.company_id,
+      productId:   order.product_id,
+      warehouseId: order.warehouse_id || null,
+      qty:         order.qty,
+      orderId:     order._id,
+      orderCode:   order.order_code,
+      userId:      req.user._id,
+    });
+    if (!reserveResult.ok) {
+      const msg = reserveResult.error || 'Could not reserve stock for this order.';
+      return sendError(res, `Order could not be accepted — ${msg}`, 422);
+    }
   }
 
   const STAGE_REMARKS = {
@@ -434,11 +459,27 @@ async function updateOrderStatus(req, res) {
   ).lean();
 
   // Cancelling a booked order returns its quantity to inventory.
-  if (status === 'Cancelled' && order.stock_deducted) {
-    const restored = await restoreStockForOrder(order, req.user._id);
-    if (restored) {
-      await Order.findByIdAndUpdate(req.params.id, { stock_deducted: false });
-      updated.stock_deducted = false;
+  if (status === 'Cancelled') {
+    // Legacy path: stock was already deducted at booking (direct physical/available deduct).
+    if (order.stock_deducted) {
+      const restored = await restoreStockForOrder(order, req.user._id);
+      if (restored) {
+        await Order.findByIdAndUpdate(req.params.id, { stock_deducted: false });
+        if (updated) updated.stock_deducted = false;
+      }
+    } else {
+      // New reserve-bucket path (Decision Point #1): stock was moved to reserved at Accepted.
+      const released = await releaseReserveForOrder({
+        companyId:   req.user.company_id,
+        productId:   order.product_id,
+        warehouseId: order.warehouse_id || null,
+        qty:         order.qty,
+        orderId:     order._id,
+        orderCode:   order.order_code,
+        userId:      req.user._id,
+      });
+      // Non-fatal: log but don't fail the cancel.
+      if (!released.ok) console.warn('[updateOrderStatus] release on cancel failed:', released.error);
     }
   }
 
@@ -740,6 +781,12 @@ async function packOrder(req, res) {
           created_by:     req.user._id,
           movement_date:  new Date(),
         }).catch(e => console.error('[StockMovement] packOrder log failed:', e.message));
+        // Threshold / out-of-stock notifications after dispatch stock-out
+        await checkAndNotifyStockLevels(
+          req.user.company_id, order.product_id,
+          inv.available_stock || 0, (inv.available_stock || 0) - fromAvailable,
+          inv.low_stock_alert || null
+        );
       }
     } catch (e) {
       // Non-fatal — log and continue. Order dispatch must not fail due to inventory issues.

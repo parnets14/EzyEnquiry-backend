@@ -16,6 +16,7 @@ const Receivable   = require('../../models/Finance Management/Receivable');
 const Inventory    = require('../../models/Purchase & Inventory Management/Inventory');
 const StockMovement = require('../../models/Purchase & Inventory Management/StockMovement');
 const Notification = require('../../models/System Management/Notification');
+const { checkAndNotifyStockLevels, confirmDispatchStockOut } = require('../Purchase & Inventory Management/inventoryController');
 const { notifyRetailer } = require('../../utils/pushHelper');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -42,72 +43,18 @@ async function nextRcvCode() {
 
 /**
  * Core stock-out logic — called at dispatch creation.
- * Moves packed → dispatched and reduces physical_stock.
- * Falls back gracefully if packed_stock < qty (e.g. picking/packing was skipped).
+ * Delegates to the inventoryController shared helper so threshold notifications
+ * fire consistently across all stock-out paths (dispatch create, packOrder, etc.)
  */
 async function performStockOut(companyId, order, dispatchId, dispatchCode, userId) {
-  if (!order.product_id || !order.qty) return;
-
-  const filter = { company_id: companyId, product_id: order.product_id };
-  if (order.warehouse_id) filter.warehouse_id = order.warehouse_id;
-
-  const inv = await Inventory.findOne(filter);
-  if (!inv) return; // no inventory record — skip silently
-
-  const qty = parseFloat(order.qty) || 0;
-  if (qty <= 0) return;
-
-  // If stock was already deducted at booking (order creation), do NOT reduce
-  // physical/available again — just advance the dispatched counter so we never
-  // double-deduct.
-  if (order.stock_deducted) {
-    await Inventory.findByIdAndUpdate(inv._id, { $inc: { dispatched_qty: +qty } });
-    return;
-  }
-
-  // Determine how much to pull from each bucket
-  const fromPacked    = Math.min(qty, inv.packed_stock   || 0);
-  const remainder1    = qty - fromPacked;
-  const fromPicking   = Math.min(remainder1, inv.picking_stock  || 0);
-  const remainder2    = remainder1 - fromPicking;
-  const fromReserved  = Math.min(remainder2, inv.reserved_stock || 0);
-  const remainder3    = remainder2 - fromReserved;
-  const fromAvailable = Math.min(remainder3, inv.available_stock || 0);
-
-  const inc = {
-    packed_stock:    -(fromPacked),
-    picking_stock:   -(fromPicking),
-    reserved_stock:  -(fromReserved),
-    available_stock: -(fromAvailable),
-    physical_stock:  -qty,   // ← ONLY reduction of physical_stock
-    current_stock:   -qty,   // legacy mirror
-    dispatched_qty:  +qty,
-    stock_out:       +qty,   // legacy counter
-  };
-
-  const prevPhysical = inv.physical_stock || 0;
-  await Inventory.findByIdAndUpdate(inv._id, { $inc: inc });
-
-  // Log stock movement
-  await StockMovement.create({
-    company_id:     companyId,
-    product_id:     order.product_id,
-    product_name:   order.product_name || '',
-    product_code:   order.product_code || '',
-    warehouse_id:   order.warehouse_id || inv.warehouse_id || null,
-    warehouse_name: '',
-    movement_type:  'Stock Out',
-    quantity:       qty,
-    previous_stock: prevPhysical,
-    new_stock:      prevPhysical - qty,
-    unit:           order.unit || '',
-    reference_type: 'Sale',
-    reference_id:   dispatchId?.toString() || '',
-    invoice_number: dispatchCode || '',
-    notes:          `Dispatched — ${dispatchCode} / Order ${order.order_code || ''}`,
-    created_by:     userId,
-    movement_date:  new Date(),
-  }).catch(e => console.error('[StockMovement] dispatch log failed:', e.message));
+  const result = await confirmDispatchStockOut({
+    companyId,
+    order,
+    dispatchId,
+    dispatchCode,
+    userId,
+  });
+  if (!result.ok) console.warn('[dispatch performStockOut] helper returned !ok');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

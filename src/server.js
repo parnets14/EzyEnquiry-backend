@@ -19,6 +19,7 @@ require('./models/index')
 const { logger }                     = require('./utils/logger')
 const { seedSuperAdmin, healOrphanUsers, seedMasters } = require('./utils/seeder')
 const { migrateInventoryBuckets }                      = require('./utils/migrateInventory')
+const { scheduleDailyReminders }                       = require('./utils/reminders')
 
 // ── Middleware ───────────────────────────────────────────────
 const { errorHandler }       = require('./middleware/errorHandler')
@@ -289,6 +290,7 @@ connectDB().then(async () => {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`✓ Server running on http://0.0.0.0:${PORT} [${process.env.NODE_ENV || 'development'}]`)
+    scheduleDailyReminders()
   })
 })
 

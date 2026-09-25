@@ -16,7 +16,8 @@ router.get   ('/',           ctrl.listPurchases);
 router.post  ('/',           allow(...procureRoles), ctrl.createPurchase);
 router.get   ('/:id',        ctrl.getPurchase);
 router.put   ('/:id',        allow(...procureRoles), ctrl.updatePurchase);
-router.patch ('/:id/status', allow(...procureRoles, 'Warehouse Staff'), ctrl.updatePurchaseStatus);
-router.delete('/:id',        allow('Company Owner', 'Accountant'), ctrl.deletePurchase);
+router.patch ('/:id/status',  allow(...procureRoles, 'Warehouse Staff'), ctrl.updatePurchaseStatus);
+router.patch ('/:id/payment', allow(...procureRoles), ctrl.updatePayment);
+router.delete('/:id',         allow('Company Owner', 'Accountant'), ctrl.deletePurchase);
 
 module.exports = router;

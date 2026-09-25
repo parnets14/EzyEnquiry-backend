@@ -3,7 +3,9 @@ const Purchase      = require('../../models/Purchase & Inventory Management/Purc
 const Inventory     = require('../../models/Purchase & Inventory Management/Inventory');
 const Supplier      = require('../../models/Purchase & Inventory Management/Supplier');
 const Payable       = require('../../models/Finance Management/Payable');
+const Transaction   = require('../../models/Finance Management/Transaction');
 const StockMovement = require('../../models/Purchase & Inventory Management/StockMovement');
+const { checkAndNotifyStockLevels } = require('./inventoryController');
 
 async function nextMovementCode() {
   const last = await StockMovement.findOne({ movement_code: /^MOV-/ }).sort({ movement_code: -1 }).lean();
@@ -44,47 +46,190 @@ async function getPurchase(req, res) {
   sendSuccess(res, purchase);
 }
 
-/** POST /api/purchases */
+/** POST /api/purchases
+ *
+ * Supports two shapes:
+ *   1. Single item  — legacy / simple: { supplier_name, qty, rate, … }
+ *   2. Multi-item   — bill with many lines: { supplier_name, items: [{product_id, qty, rate, …}], … }
+ *
+ * Multi-item: all line items get the SAME bill_code; each becomes its own
+ * Purchase record (keeps the Stock-In logic unchanged per-product).
+ * The first item's purchase_code is returned as the canonical bill reference.
+ *
+ * auto_receive (bool, default false) — when true, immediately mark each
+ * line status='Received' and stock_in_done=true, increment inventory,
+ * write StockMovement, and fire back-in-stock/threshold notifications.
+ * Use this when the goods have physically arrived at the warehouse before
+ * the bill is entered (the common happy-path workflow from SOW).
+ */
 async function createPurchase(req, res) {
-  const { supplier_name, qty, rate } = req.body;
-  if (!supplier_name || !qty || !rate) return sendError(res, 'Supplier name, qty and rate are required.');
+  const { supplier_name, items } = req.body;
+  const auto_receive = Boolean(req.body.auto_receive);
 
-  const gst_percent  = parseFloat(req.body.gst_percent || 18);
-  const amount       = parseFloat(qty) * parseFloat(rate);
-  const gst_amount   = Math.round(amount * gst_percent / 100);
-  const total_amount = amount + gst_amount;
+  // ── Shared bill header fields ─────────────────────────
+  const sharedFields = {
+    supplier_id:     req.body.supplier_id     || null,
+    supplier_name:   supplier_name            || '',
+    warehouse_id:    req.body.warehouse_id    || null,
+    warehouse_name:  req.body.warehouse_name  || '',
+    branch_id:       req.body.branch_id       || null,
+    branch_name:     req.body.branch_name     || '',
+    invoice_number:  req.body.invoice_number  || '',
+    delivery_number: req.body.delivery_number || '',
+    purchase_date:   req.body.purchase_date   || null,
+    due_date:        req.body.due_date        || null,
+    notes:           req.body.notes           || '',
+    payment_notes:   req.body.payment_notes   || '',
+  };
 
-  // Auto-generate purchase code
-  const last = await Purchase.findOne({ purchase_code: /^PUR-/ }).sort({ purchase_code: -1 }).lean();
-  const num  = last?.purchase_code ? parseInt(last.purchase_code.split('-')[1], 10) : 0;
-  const purchase_code = `PUR-${String(num + 1).padStart(4, '0')}`;
+  if (!supplier_name) return sendError(res, 'Supplier name is required.');
 
-  const purchase = await Purchase.create({
-    ...req.body,
-    purchase_code,
-    company_id:  req.user.company_id,
-    amount, gst_amount, total_amount, gst_percent,
-    status:      'Pending',
-    stock_in_done: false,
-    created_by:  req.user._id,
-  });
+  // ── Normalise lines ─────────────────────────────────────
+  // Accept either `items[]` (multi-item) or legacy top-level qty/rate fields.
+  let lines;
+  if (Array.isArray(items) && items.length > 0) {
+    lines = items;
+  } else {
+    const { qty, rate } = req.body;
+    if (!qty || !rate) return sendError(res, 'qty and rate are required (or use items[] for multi-product).');
+    lines = [req.body];   // single-item — behaves exactly like before
+  }
 
-  // Auto create Payable
+  // ── Generate a shared bill_code for this batch ──────────
+  const lastBill = await Purchase.findOne({ bill_code: /^BILL-/ }).sort({ bill_code: -1 }).lean();
+  const billNum  = lastBill?.bill_code ? parseInt(lastBill.bill_code.split('-')[1], 10) : 0;
+  const bill_code = `BILL-${String(billNum + 1).padStart(4, '0')}`;
+
+  const companyId = req.user.company_id;
+  const createdPurchases = [];
+  let billTotal = 0;
+
+  for (const line of lines) {
+    const gst_percent  = parseFloat(line.gst_percent || req.body.gst_percent || 18);
+    const qty          = parseFloat(line.qty);
+    const rate         = parseFloat(line.rate);
+    if (!qty || !rate) continue;                          // skip invalid lines
+
+    const amount       = qty * rate;
+    const gst_amount   = Math.round(amount * gst_percent / 100);
+    const total_amount = amount + gst_amount;
+    billTotal += total_amount;
+
+    // Per-item sequential purchase code
+    const last = await Purchase.findOne({ purchase_code: /^PUR-/ }).sort({ purchase_code: -1 }).lean();
+    const num  = last?.purchase_code ? parseInt(last.purchase_code.split('-')[1], 10) : 0;
+    const purchase_code = `PUR-${String(num + 1).padStart(4, '0')}`;
+
+    const initialStatus = auto_receive ? 'Received' : 'Pending';
+    const purchase = await Purchase.create({
+      ...sharedFields,
+      bill_code,
+      purchase_code,
+      company_id: companyId,
+      product_id:    line.product_id    || null,
+      product_code:  line.product_code  || '',
+      product_name:  line.product_name  || '',
+      unit:          line.unit          || req.body.unit || '',
+      qty, rate, amount, gst_percent, gst_amount, total_amount,
+      payment_status: 'Due',
+      status:         initialStatus,
+      stock_in_done:  auto_receive ? true : false,
+      created_by:     req.user._id,
+    });
+
+    // ── auto_receive: stock-in + movement log + threshold alerts ──────
+    if (auto_receive && purchase.product_id && qty > 0) {
+      const invFilter = { company_id: companyId, product_id: purchase.product_id, warehouse_id: sharedFields.warehouse_id || null };
+      const invPrev = await Inventory.findOne(invFilter).select('current_stock available_stock physical_stock low_stock_alert').lean();
+      const prevCurrent   = invPrev?.current_stock || 0;
+      const prevAvailable = invPrev?.available_stock || 0;
+
+      const newInv = await Inventory.findOneAndUpdate(
+        invFilter,
+        {
+          $setOnInsert: { company_id: companyId },
+          $inc: { stock_in: qty, current_stock: qty, physical_stock: qty, available_stock: qty },
+        },
+        { upsert: true, new: true }
+      );
+
+      await StockMovement.create({
+        company_id:     companyId,
+        movement_code:  await nextMovementCode(),
+        product_id:     purchase.product_id,
+        product_name:   purchase.product_name || '',
+        product_code:   purchase.product_code || '',
+        warehouse_id:   sharedFields.warehouse_id || null,
+        warehouse_name: sharedFields.warehouse_name || '',
+        movement_type:  'Stock In',
+        quantity:       qty,
+        previous_stock: prevCurrent,
+        new_stock:      prevCurrent + qty,
+        reference_type: 'Purchase',
+        reference_id:   String(purchase._id),
+        supplier_id:    sharedFields.supplier_id || null,
+        supplier_name:  sharedFields.supplier_name || '',
+        invoice_number: sharedFields.invoice_number || '',
+        created_by:     req.user._id,
+        movement_date:  new Date(),
+      }).catch(e => console.error('[StockMovement] purchase auto log failed:', e.message));
+
+      await checkAndNotifyStockLevels(
+        companyId, purchase.product_id,
+        prevAvailable, prevAvailable + qty,
+        newInv?.low_stock_alert || null
+      );
+    }
+
+    createdPurchases.push(purchase);
+  }
+
+  if (createdPurchases.length === 0) {
+    return sendError(res, 'No valid line items — purchase not created.');
+  }
+
+  // ── Single Payable for the whole bill ─────────────────
   const lastPay = await Payable.findOne({ payable_code: /^PAY-/ }).sort({ payable_code: -1 }).lean();
   const pNum = lastPay?.payable_code ? parseInt(lastPay.payable_code.split('-')[1], 10) : 0;
-  await Payable.create({
+  const payable = await Payable.create({
     payable_code:   `PAY-${String(pNum + 1).padStart(4, '0')}`,
-    company_id:     req.user.company_id,
-    supplier_id:    req.body.supplier_id || null,
-    supplier_name,
-    purchase_id:    purchase._id,
-    invoice_amount: total_amount,
+    company_id:     companyId,
+    supplier_id:    sharedFields.supplier_id,
+    supplier_name:  sharedFields.supplier_name,
+    purchase_id:    createdPurchases[0]._id,
+    invoice_amount: billTotal,
     paid:           0,
-    outstanding:    total_amount,
+    outstanding:    billTotal,
     status:         'Pending',
   });
 
-  sendSuccess(res, purchase, 'Purchase created with status Pending. Approve → Receive to update inventory.', 201);
+  // ── Supplier ledger (Transaction) entry for the Payable ──
+  // Credit the supplier's ledger with the bill amount.
+  const lastTxn = await Transaction.findOne({ txn_code: /^TXN-/ }).sort({ txn_code: -1 }).lean();
+  const tNum    = lastTxn?.txn_code ? parseInt(lastTxn.txn_code.split('-')[1], 10) : 0;
+  await Transaction.create({
+    txn_code:     `TXN-${String(tNum + 1).padStart(4, '0')}`,
+    company_id:   companyId,
+    type:         'Paid',   // money we WILL pay to the supplier (liability)
+    party_name:   sharedFields.supplier_name,
+    supplier_id:  sharedFields.supplier_id || null,
+    reference_id: payable._id,
+    amount:       billTotal,
+    mode:         'Credit',
+    reference:    `Purchase ${bill_code}`,
+    notes:        `Purchase bill ${bill_code} — ${createdPurchases.length} line(s)`,
+    txn_date:     new Date(),
+    recorded_by:  req.user._id,
+  }).catch(e => console.error('[Transaction] purchase ledger entry failed:', e.message));
+
+  // Return the first record plus a summary for the UI.
+  sendSuccess(res, {
+    bill_code,
+    auto_receive,
+    items_created: createdPurchases.length,
+    purchases: createdPurchases,
+    first: createdPurchases[0],
+  }, `Purchase bill ${bill_code} created with ${createdPurchases.length} item(s).`, 201);
 }
 
 /**
@@ -134,13 +279,14 @@ async function updatePurchaseStatus(req, res) {
 
     if (claimed) {
       const qtyIn   = parseFloat(purchase.qty);
-      const invPrev = await Inventory.findOne(
-        { company_id: companyId, product_id: purchase.product_id, warehouse_id: purchase.warehouse_id || null }
-      ).select('current_stock').lean();
-      const prevStock = invPrev?.current_stock || 0;
+      const invFilter = { company_id: companyId, product_id: purchase.product_id, warehouse_id: purchase.warehouse_id || null };
+      const invPrev = await Inventory.findOne(invFilter)
+        .select('current_stock available_stock physical_stock low_stock_alert').lean();
+      const prevStock     = invPrev?.current_stock   || 0;
+      const prevAvailable = invPrev?.available_stock || 0;
 
-      await Inventory.findOneAndUpdate(
-        { company_id: companyId, product_id: purchase.product_id, warehouse_id: purchase.warehouse_id || null },
+      const newInv = await Inventory.findOneAndUpdate(
+        invFilter,
         {
           $setOnInsert: { company_id: companyId },
           $inc: { stock_in: qtyIn, current_stock: qtyIn, physical_stock: qtyIn, available_stock: qtyIn },
@@ -168,7 +314,14 @@ async function updatePurchaseStatus(req, res) {
         invoice_number: purchase.invoice_number || '',
         created_by:     req.user._id,
         movement_date:  new Date(),
-      });
+      }).catch(e => console.error('[StockMovement] purchase status log failed:', e.message));
+
+      // Back-in-stock + low/out-of-stock threshold notifications
+      await checkAndNotifyStockLevels(
+        companyId, purchase.product_id,
+        prevAvailable, prevAvailable + qtyIn,
+        newInv?.low_stock_alert || null
+      );
     }
   }
 
@@ -185,10 +338,26 @@ async function updatePurchase(req, res) {
   delete sanitised.status;
   delete sanitised.stock_in_done;
 
-  const { supplier_name, product_name, qty, unit, rate, gst_percent = 18, invoice_number, delivery_number, purchase_date, notes, branch_id, branch_name, warehouse_id } = sanitised;
+  const {
+    supplier_name, product_name, qty, unit, rate, gst_percent = 18,
+    invoice_number, delivery_number, purchase_date, notes, branch_id, branch_name,
+    warehouse_id,
+    // Payment fields
+    payment_status, due_date, amount_paid, payment_notes,
+  } = sanitised;
+
   const amount       = parseFloat(qty) * parseFloat(rate);
   const gst_amount   = Math.round(amount * gst_percent / 100);
   const total_amount = amount + gst_amount;
+
+  // Derive payment_status automatically if amount_paid is provided.
+  let derivedPaymentStatus = payment_status;
+  if (amount_paid !== undefined) {
+    const paid = parseFloat(amount_paid) || 0;
+    if (paid <= 0)             derivedPaymentStatus = 'Due';
+    else if (paid >= total_amount) derivedPaymentStatus = 'Paid';
+    else                       derivedPaymentStatus = 'Partially Paid';
+  }
 
   const purchase = await Purchase.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },
@@ -201,11 +370,42 @@ async function updatePurchase(req, res) {
       ...(branch_id   !== undefined && { branch_id:   branch_id   || null }),
       ...(branch_name !== undefined && { branch_name: branch_name || '' }),
       ...(warehouse_id !== undefined && { warehouse_id: warehouse_id || null }),
+      // Payment fields — only update if provided
+      ...(derivedPaymentStatus !== undefined && { payment_status: derivedPaymentStatus }),
+      ...(due_date    !== undefined && { due_date:   due_date   || null }),
+      ...(amount_paid !== undefined && { amount_paid: parseFloat(amount_paid) || 0 }),
+      ...(payment_notes !== undefined && { payment_notes: payment_notes || '' }),
     },
     { new: true }
   ).lean();
   if (!purchase) return sendError(res, 'Purchase not found.', 404);
   sendSuccess(res, purchase, 'Purchase updated.');
+}
+
+/** PATCH /api/purchases/:id/payment — record a payment against a purchase */
+async function updatePayment(req, res) {
+  const { amount_paid, payment_notes, due_date } = req.body;
+  const purchase = await Purchase.findOne({ _id: req.params.id, company_id: req.user.company_id }).lean();
+  if (!purchase) return sendError(res, 'Purchase not found.', 404);
+
+  const paid = parseFloat(amount_paid) || 0;
+  const total = purchase.total_amount || 0;
+  let payment_status = 'Due';
+  if (paid >= total)  payment_status = 'Paid';
+  else if (paid > 0)  payment_status = 'Partially Paid';
+
+  // Check overdue — if due_date passed and not fully paid
+  const dueDate = due_date ? new Date(due_date) : purchase.due_date;
+  if (payment_status !== 'Paid' && dueDate && new Date() > dueDate) {
+    payment_status = 'Overdue';
+  }
+
+  const updated = await Purchase.findByIdAndUpdate(
+    req.params.id,
+    { amount_paid: paid, payment_status, payment_notes: payment_notes || '', due_date: dueDate || null },
+    { new: true }
+  ).lean();
+  sendSuccess(res, updated, `Payment recorded. Status: ${payment_status}.`);
 }
 
 /** DELETE /api/purchases/:id */
@@ -299,6 +499,6 @@ async function deleteSupplier(req, res) {
 
 module.exports = {
   listPurchases, getPurchase, createPurchase, updatePurchase, deletePurchase,
-  updatePurchaseStatus,
+  updatePurchaseStatus, updatePayment,
   listSuppliers, createSupplier, updateSupplier, deleteSupplier,
 };

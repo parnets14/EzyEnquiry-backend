@@ -11,6 +11,11 @@ const ALLOWED_TYPES = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv',
+  'application/csv',
+  'text/x-csv',
+  'application/x-csv',
+  'text/comma-separated-values',
 ]
 
 function makeStorage(folder) {
@@ -42,8 +47,9 @@ function createUploader(folder, fieldName = 'file', maxCount = 1) {
 }
 
 // Single file upload middleware factory
-const uploadDocs   = createUploader('documents', 'file', 5)
-const uploadImages = createUploader('images',    'file', 10)
-const uploadAvatar = createUploader('avatars',   'file', 1)
+const uploadDocs        = createUploader('documents',    'file', 5)
+const uploadImages      = createUploader('images',       'file', 10)
+const uploadAvatar      = createUploader('avatars',      'file', 1)
+const uploadSpreadsheet = createUploader('spreadsheets', 'file', 1)
 
-module.exports = { uploadDocs, uploadImages, uploadAvatar, createUploader }
+module.exports = { uploadDocs, uploadImages, uploadAvatar, uploadSpreadsheet, createUploader }

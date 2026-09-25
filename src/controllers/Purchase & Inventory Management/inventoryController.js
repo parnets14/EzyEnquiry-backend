@@ -25,30 +25,283 @@ const mongoose      = require('mongoose');
 /**
  * Notify the company owner about a low-stock / out-of-stock event.
  * Creates an in-app Notification and fires a best-effort push. Non-blocking.
+ * Dedup: skip if an unread notification for the same (company, product, kind)
+ * exists in the last 24 hours.
  */
 async function notifyStockOwner(companyId, productId, kind, threshold) {
+  const Notification = require('../../models/System Management/Notification');
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const recentDup = await Notification.findOne({
+    company_id: companyId,
+    reference_id: productId,
+    type: kind === 'out_of_stock' ? 'out_of_stock' : 'low_stock',
+    is_read: false,
+    created_at: { $gte: oneDayAgo },
+  }).select('_id').lean().catch(() => null);
+  if (recentDup) return;
+
   const [product, owner] = await Promise.all([
     Product.findById(productId).select('name code').lean(),
     User.findOne({ company_id: companyId, role: { $in: ['Company Owner', 'Wholesaler', 'Retailer'] } }).select('_id').lean(),
   ]);
   const pname = product?.name || 'A product';
   const isOut = kind === 'out_of_stock';
-  const title = isOut ? 'Out of Stock' : 'Low Stock Alert';
-  const message = isOut
-    ? `"${pname}" is now out of stock. Restock soon.`
-    : `"${pname}" is running low (at or below ${threshold ?? 50} units).`;
+  const backIn = kind === 'back_in_stock';
+  const notifType = backIn ? 'back_in_stock' : (isOut ? 'out_of_stock' : 'low_stock');
+  const title = backIn ? 'Back In Stock' : (isOut ? 'Out of Stock' : 'Low Stock Alert');
+  const message = backIn
+    ? `"${pname}" is back in stock.`
+    : isOut
+      ? `"${pname}" is now out of stock. Restock soon.`
+      : `"${pname}" is running low (at or below ${threshold ?? 50} units).`;
 
   await Notification.create({
     company_id: companyId,
     user_id:    owner ? owner._id : null,
-    type:       isOut ? 'out_of_stock' : 'low_stock',
+    type:       notifType,
     title,
     message,
     reference_id: productId,
     is_read:    false,
   }).catch(() => {});
 
-  if (owner) notifyRetailer(owner._id, { title, body: message, type: isOut ? 'out_of_stock' : 'low_stock', referenceId: productId });
+  if (owner) notifyRetailer(owner._id, { title, body: message, type: notifType, referenceId: productId }).catch(() => {});
+}
+
+/**
+ * Unified stock-level change detector.
+ * Fires the appropriate alerts when a stock movement crosses a threshold.
+ *
+ * Directions handled:
+ *   UP (prevAvail <= 0, newAvail > 0)                      → Back In Stock
+ *   DOWN (prevAvail > 0, newAvail <= 0)                    → Out of Stock
+ *   DOWN (prevAvail > threshold, newAvail <= threshold)    → Low Stock
+ */
+async function checkAndNotifyStockLevels(companyId, productId, prevAvailable, newAvailable, threshold) {
+  try {
+    if (!companyId || !productId) return;
+    const prevAvail = Number(prevAvailable) || 0;
+    const newAvail  = Number(newAvailable)  || 0;
+    const limit     = Number(threshold);
+    const safeLimit = Number.isFinite(limit) && limit >= 0 ? limit : 50;
+
+    if (prevAvail <= 0 && newAvail > 0) {
+      await notifyStockOwner(companyId, productId, 'back_in_stock', safeLimit);
+      return;
+    }
+    if (prevAvail > 0 && newAvail <= 0) {
+      await notifyStockOwner(companyId, productId, 'out_of_stock', safeLimit);
+      return;
+    }
+    if (newAvail > 0 && safeLimit > 0 && prevAvail > safeLimit && newAvail <= safeLimit) {
+      await notifyStockOwner(companyId, productId, 'low_stock', safeLimit);
+    }
+  } catch (e) {
+    console.error('[checkAndNotifyStockLevels] failed gracefully:', e.message);
+  }
+}
+
+// ── Pure programmatic helpers (no req/res) for Order / Dispatch controllers ─
+
+/**
+ * Move available → reserved when an order transitions to Accepted.
+ * Returns { ok: true, inventory } on success or { ok: false, error }.
+ * Never throws — callers rely on returned status.
+ */
+async function reserveStockForOrder({ companyId, productId, warehouseId, qty, orderId, orderCode, userId }) {
+  try {
+    const absQty = Math.abs(parseFloat(qty));
+    if (!absQty || !productId) return { ok: false, error: 'Missing product/qty' };
+
+    const filter = { company_id: companyId, product_id: productId };
+    if (warehouseId) filter.warehouse_id = warehouseId;
+
+    const inv = await Inventory.findOne(filter).sort({ available_stock: -1 }).exec();
+    if (!inv) return { ok: false, error: 'No inventory record found' };
+    if ((inv.available_stock || 0) < absQty) {
+      return { ok: false, error: `Insufficient stock. Available: ${inv.available_stock || 0}` };
+    }
+
+    const prevAvailable = inv.available_stock || 0;
+    const prevPhysical  = inv.physical_stock  || 0;
+
+    const updated = await Inventory.findByIdAndUpdate(inv._id, {
+      $inc: { available_stock: -absQty, reserved_stock: absQty },
+    }, { new: true }).lean();
+
+    await logMovement({
+      company_id:     companyId,
+      product_id:     productId,
+      warehouse_id:   warehouseId || inv.warehouse_id || null,
+      movement_type:  'Stock Out',
+      quantity:       absQty,
+      previous_stock: prevPhysical,
+      new_stock:      updated.physical_stock || prevPhysical,
+      unit:           '',
+      reference_type: 'Order',
+      reference_id:   orderId ? String(orderId) : '',
+      notes:          `Reserved for order ${orderCode || orderId || ''}`,
+      created_by:     userId || null,
+      movement_date:  new Date(),
+    });
+
+    await checkAndNotifyStockLevels(
+      companyId, productId,
+      prevAvailable, updated.available_stock,
+      updated.low_stock_alert
+    );
+
+    return { ok: true, inventory: updated };
+  } catch (e) {
+    console.error('[reserveStockForOrder] failed:', e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+/**
+ * Release reserved (or picking/packed) stock back to available on order cancel.
+ */
+async function releaseReserveForOrder({ companyId, productId, warehouseId, qty, orderId, orderCode, userId }) {
+  try {
+    const absQty = Math.abs(parseFloat(qty));
+    if (!absQty || !productId) return { ok: false, error: 'Missing product/qty' };
+
+    const filter = { company_id: companyId, product_id: productId };
+    if (warehouseId) filter.warehouse_id = warehouseId;
+
+    const inv = await Inventory.findOne(filter).sort({ reserved_stock: -1 }).exec();
+    if (!inv) return { ok: false, error: 'No inventory record found' };
+
+    const releasable = (inv.reserved_stock || 0) + (inv.picking_stock || 0) + (inv.packed_stock || 0);
+    const actual     = Math.min(absQty, releasable);
+    if (actual <= 0) return { ok: true, inventory: inv.toObject ? inv.toObject() : inv };
+
+    let remaining = actual;
+    const inc = {};
+
+    if ((inv.packed_stock || 0) > 0 && remaining > 0) {
+      const fromPacked = Math.min(remaining, inv.packed_stock);
+      inc.packed_stock  = -fromPacked;
+      remaining        -= fromPacked;
+    }
+    if ((inv.picking_stock || 0) > 0 && remaining > 0) {
+      const fromPicking = Math.min(remaining, inv.picking_stock);
+      inc.picking_stock = -fromPicking;
+      remaining        -= fromPicking;
+    }
+    if ((inv.reserved_stock || 0) > 0 && remaining > 0) {
+      const fromReserved = Math.min(remaining, inv.reserved_stock);
+      inc.reserved_stock = -fromReserved;
+      remaining         -= fromReserved;
+    }
+    inc.available_stock = actual;
+
+    const prevAvailable = inv.available_stock || 0;
+    const prevPhysical  = inv.physical_stock  || 0;
+
+    const updated = await Inventory.findByIdAndUpdate(inv._id, { $inc: inc }, { new: true }).lean();
+
+    await logMovement({
+      company_id:     companyId,
+      product_id:     productId,
+      warehouse_id:   warehouseId || inv.warehouse_id || null,
+      movement_type:  'Reversal',
+      quantity:       actual,
+      previous_stock: prevPhysical,
+      new_stock:      updated.physical_stock || prevPhysical,
+      unit:           '',
+      reference_type: 'Order',
+      reference_id:   orderId ? String(orderId) : '',
+      notes:          `Reserved stock released — order ${orderCode || orderId || ''} cancelled`,
+      created_by:     userId || null,
+      movement_date:  new Date(),
+    });
+
+    await checkAndNotifyStockLevels(
+      companyId, productId,
+      prevAvailable, updated.available_stock,
+      updated.low_stock_alert
+    );
+
+    return { ok: true, inventory: updated };
+  } catch (e) {
+    console.error('[releaseReserveForOrder] failed:', e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+/**
+ * Deduct stock directly after a confirmed stock-out (dispatch / sale).
+ * Also runs threshold notifications.
+ */
+async function confirmDispatchStockOut({ companyId, order, dispatchId, dispatchCode, userId }) {
+  if (!order?.product_id || !order?.qty) return { ok: true };
+
+  const qty = Math.abs(parseFloat(order.qty)) || 0;
+  if (qty <= 0) return { ok: true };
+
+  const filter = { company_id: companyId, product_id: order.product_id };
+  if (order.warehouse_id) filter.warehouse_id = order.warehouse_id;
+
+  const inv = await Inventory.findOne(filter);
+  if (!inv) return { ok: true };
+
+  // If stock was deducted at booking (legacy path), only advance counter.
+  if (order.stock_deducted) {
+    await Inventory.findByIdAndUpdate(inv._id, { $inc: { dispatched_qty: +qty } });
+    return { ok: true };
+  }
+
+  const fromPacked    = Math.min(qty, inv.packed_stock    || 0);
+  const rem1          = qty - fromPacked;
+  const fromPicking   = Math.min(rem1, inv.picking_stock   || 0);
+  const rem2          = rem1 - fromPicking;
+  const fromReserved  = Math.min(rem2, inv.reserved_stock  || 0);
+  const rem3          = rem2 - fromReserved;
+  const fromAvailable = Math.min(rem3, inv.available_stock || 0);
+
+  const inc = {
+    packed_stock:    -fromPacked,
+    picking_stock:   -fromPicking,
+    reserved_stock:  -fromReserved,
+    available_stock: -fromAvailable,
+    physical_stock:  -qty,
+    current_stock:   -qty,
+    dispatched_qty:  +qty,
+    stock_out:       +qty,
+  };
+
+  const prevAvailable = inv.available_stock || 0;
+  const prevPhysical  = inv.physical_stock  || 0;
+
+  const updated = await Inventory.findByIdAndUpdate(inv._id, { $inc: inc }, { new: true }).lean();
+
+  await logMovement({
+    company_id:     companyId,
+    product_id:     order.product_id,
+    product_name:   order.product_name || '',
+    product_code:   order.product_code || '',
+    warehouse_id:   order.warehouse_id || inv.warehouse_id || null,
+    movement_type:  'Stock Out',
+    quantity:       qty,
+    previous_stock: prevPhysical,
+    new_stock:      updated.physical_stock || prevPhysical - qty,
+    unit:           order.unit || '',
+    reference_type: 'Sale',
+    reference_id:   dispatchId ? String(dispatchId) : '',
+    invoice_number: dispatchCode || '',
+    notes:          `Dispatched — ${dispatchCode || ''} / Order ${order.order_code || ''}`,
+    created_by:     userId || null,
+    movement_date:  new Date(),
+  });
+
+  await checkAndNotifyStockLevels(
+    companyId, order.product_id,
+    prevAvailable, updated.available_stock,
+    updated.low_stock_alert
+  );
+
+  return { ok: true, updated };
 }
 
 // ── Ensure Warehouse is registered before populate ──────────────────────────
@@ -527,14 +780,11 @@ async function adjustStock(req, res) {
   const updated = await Inventory.findByIdAndUpdate(inv._id, update, { new: true }).lean();
 
   // ── Low-stock / out-of-stock alerts (fire on downward crossing) ──
-  try {
-    const threshold = updated.low_stock_alert ?? 50;
-    if (!isIn && prevAvailable > 0 && updated.available_stock <= 0) {
-      await notifyStockOwner(req.user.company_id, product_id, 'out_of_stock');
-    } else if (!isIn && prevAvailable > threshold && updated.available_stock <= threshold && updated.available_stock > 0) {
-      await notifyStockOwner(req.user.company_id, product_id, 'low_stock', threshold);
-    }
-  } catch { /* alerts are best-effort */ }
+  await checkAndNotifyStockLevels(
+    req.user.company_id, product_id,
+    prevAvailable, updated.available_stock,
+    updated.low_stock_alert
+  );
 
   await logMovement({
     company_id:     inv.company_id || companyId,
@@ -872,4 +1122,9 @@ module.exports = {
   dispatchStockOut,
   blockStock,
   listMovements,
+  // Pure helpers (no req/res) for Order / Dispatch / Purchase controllers
+  reserveStockForOrder,
+  releaseReserveForOrder,
+  confirmDispatchStockOut,
+  checkAndNotifyStockLevels,
 };

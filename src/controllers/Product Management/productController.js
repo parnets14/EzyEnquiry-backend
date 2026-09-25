@@ -7,6 +7,9 @@ const Warehouse        = require('../../models/Purchase & Inventory Management/W
 const Company          = require('../../models/Company Management/Company')
 const resolveCompanyId = require('../../utils/resolveCompany')
 const mongoose         = require('mongoose')
+const ExcelJS          = require('exceljs')
+const fs               = require('fs')
+const path             = require('path')
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -561,6 +564,19 @@ async function updateProduct(req, res) {
     .populate('sub_category_id', 'name')
     .lean()
   if (!product) return sendError(res, 'Product not found.', 404)
+
+  // ── Phase 3b: Sync Product thresholds/rates to all Inventory records ─
+  const inventoryUpdates = {};
+  if (wasSubmitted('min_stock_level')) inventoryUpdates.low_stock_alert = Number(product.min_stock_level) || 0;
+  if (wasSubmitted('reorder_level'))   inventoryUpdates.reorder_level   = Number(product.reorder_level)   || 0;
+  if (wasSubmitted('purchase_price'))  inventoryUpdates.purchase_rate   = Number(product.purchase_price)  || 0;
+  if (Object.keys(inventoryUpdates).length > 0) {
+    await Inventory.updateMany(
+      { company_id: ownerCompanyId, product_id: product._id },
+      { $set: inventoryUpdates }
+    ).catch(e => console.warn(`[updateProduct] inventory sync failed:`, e.message));
+  }
+
   sendSuccess(res, product, 'Product updated.')
 }
 
@@ -687,8 +703,286 @@ async function productsForSelect(req, res) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/products/bulk-upload
+// Wholesaler / Admin bulk product import. Accepts .xlsx, .xls, .csv.
+//
+// Expected columns (case-insensitive, flexible aliases):
+//   Required: name (or product_name), code (or product_code, sku) [auto if blank]
+//   Optional: category/category_id, brand/brand_id, unit, size (or dimensions),
+//             finish, thickness, material, color, design,
+//             purchase_price (or cost), selling_price, dealer_price, retail_price,
+//             mrp, gst_percent, hsn_code, min_stock_level, reorder_level,
+//             pcs_per_box, sqft_per_box, weight_per_box,
+//             barcode, manufacturer, origin, description,
+//             is_active (TRUE/FALSE, default TRUE)
+//
+// Returns { total, imported, errors:[{row,field,message}], imported_items }
+// ─────────────────────────────────────────────────────────────────────────────
+async function bulkUploadProducts(req, res) {
+  const file = (req.files && req.files[0]) || null;
+  if (!file) return sendError(res, 'No spreadsheet file uploaded (field: "file").', 400);
+
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  const supported = ['.xlsx', '.xls', '.csv'];
+  if (!supported.includes(ext)) {
+    fs.promises.unlink(file.path).catch(() => {});
+    return sendError(res, `Unsupported file type "${ext}". Supported: ${supported.join(', ')}`, 400);
+  }
+
+  // ── 1. Load workbook / CSV rows via exceljs ─────────────────────────
+  const workbook = new ExcelJS.Workbook();
+  let rawRows = [];
+  try {
+    if (ext === '.csv') {
+      await workbook.csv.readFile(file.path);
+      const ws = workbook.worksheets[0];
+      ws.eachRow(r => rawRows.push(r.values.slice(1)));
+    } else {
+      await workbook.xlsx.readFile(file.path);
+      const ws = workbook.worksheets[0];
+      ws.eachRow(r => rawRows.push(r.values.slice(1)));
+    }
+  } catch (e) {
+    fs.promises.unlink(file.path).catch(() => {});
+    return sendError(res, `Failed to parse spreadsheet: ${e.message}`, 400);
+  } finally {
+    fs.promises.unlink(file.path).catch(() => {});
+  }
+
+  if (!rawRows.length) return sendError(res, 'Spreadsheet is empty.', 400);
+
+  // ── 2. Normalise header row (case-insensitive, map aliases) ────────
+  const headerRaw = (rawRows.shift() || []).map(v => String(v || '').trim().toLowerCase());
+  const aliasMap = {
+    product_name: 'name', sku: 'code', product_code: 'code',
+    product_category: 'category', product_brand: 'brand',
+    cost: 'purchase_price', rate: 'selling_price',
+    price: 'selling_price', stock_alert: 'min_stock_level',
+    min_stock: 'min_stock_level', reorder: 'reorder_level',
+    dimensions: 'size', active: 'is_active',
+    hsn: 'hsn_code',
+  };
+  const headers = headerRaw.map(h => (aliasMap[h] || h).replace(/\s+/g, '_'));
+  const rowToObj = (rowArr) => {
+    const obj = {};
+    headers.forEach((h, i) => { if (h) obj[h] = rowArr[i] ?? null; });
+    return obj;
+  };
+  const rows = rawRows.map(rowToObj).filter(r => Object.values(r).some(v => v !== null && String(v).trim() !== ''));
+  const total = rows.length;
+
+  if (!total) return sendError(res, 'No data rows found after header.', 400);
+
+  const companyId = req.user.company_id;
+  const errors = [];
+  const imported = [];
+
+  // Cache lookups to avoid repeated DB calls for identical values
+  const categoryCache = new Map();   // key = string (name/hex) → ObjectId | null
+  const brandCache    = new Map();
+  const codeSeen      = new Set();   // prevent duplicates WITHIN the same upload
+
+  const createdByType = await getCreatorType(req);
+  let defaultWarehouseId = null;
+  const anyWarehouse = await Warehouse.findOne({ company_id: companyId, is_active: true }).select('_id').lean().catch(() => null);
+  defaultWarehouseId = anyWarehouse?._id || null;
+
+  // Also: all codes already in DB so we can flag duplicates early
+  const allCodes = await Product.distinct('code', { company_id: companyId, status: { $ne: 'deleted' } });
+  allCodes.forEach(c => codeSeen.add(String(c || '').trim()));
+
+  const pushError = (idx, field, msg) => errors.push({ row: idx + 2, field, message: msg });
+
+  // ── 3. Validate + insert row-by-row (keeps logic identical to createProduct per-row) ─
+  for (let i = 0; i < rows.length; i++) {
+    const raw = rows[i];
+    const norm = {};
+
+    // Trim all strings
+    for (const k of Object.keys(raw)) {
+      norm[k] = (typeof raw[k] === 'string') ? raw[k].trim() : raw[k];
+    }
+
+    // ── Name (required) ──────────────────────────────────────
+    let name = String(norm.name || '').trim();
+    if (!name) { pushError(i, 'name', 'Product name is required.'); continue; }
+    norm.name = name;
+
+    // ── Code (auto-generate if blank) ────────────────────────
+    let code = String(norm.code || '').trim();
+    if (!code) {
+      code = `PRD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 5).toUpperCase()}-${i}`;
+    }
+    if (codeSeen.has(code)) {
+      pushError(i, 'code', `Duplicate product code "${code}" (already in DB or used by a prior row).`);
+      continue;
+    }
+    codeSeen.add(code);
+    norm.code = code;
+
+    // ── Category / Brand resolve ─────────────────────────────
+    let category_id     = null;
+    let sub_category_id = null;
+    let brand_id        = null;
+
+    if (norm.category_id) {
+      const key = `id:${norm.category_id}`;
+      if (!categoryCache.has(key)) {
+        const c = mongoose.isValidObjectId(norm.category_id)
+          ? await Category.findOne({ _id: norm.category_id, company_id: companyId }).select('_id parent_id').lean()
+          : null;
+        categoryCache.set(key, c || null);
+      }
+      const resolved = categoryCache.get(key);
+      if (!resolved) { pushError(i, 'category_id', `Category id "${norm.category_id}" not found.`); continue; }
+      category_id = resolved._id;
+    } else if (norm.category) {
+      const key = `name:${String(norm.category).toLowerCase()}`;
+      if (!categoryCache.has(key)) {
+        const c = await Category.findOne({
+          company_id: companyId,
+          name: { $regex: new RegExp(`^${escapeRegex(String(norm.category))}$`, 'i') },
+        }).select('_id parent_id').lean();
+        categoryCache.set(key, c || null);
+      }
+      const resolved = categoryCache.get(key);
+      if (resolved) category_id = resolved._id;
+    }
+
+    if (norm.sub_category && category_id) {
+      const sub = await Category.findOne({
+        company_id: companyId, parent_id: category_id,
+        name: { $regex: new RegExp(`^${escapeRegex(String(norm.sub_category))}$`, 'i') },
+      }).select('_id').lean();
+      if (sub) sub_category_id = sub._id;
+    }
+
+    if (norm.brand_id) {
+      const key = `id:${norm.brand_id}`;
+      if (!brandCache.has(key)) {
+        const b = mongoose.isValidObjectId(norm.brand_id)
+          ? await Brand.findOne({ _id: norm.brand_id, company_id: companyId }).select('_id').lean()
+          : null;
+        brandCache.set(key, b || null);
+      }
+      const resolved = brandCache.get(key);
+      if (!resolved) { pushError(i, 'brand_id', `Brand id "${norm.brand_id}" not found.`); continue; }
+      brand_id = resolved._id;
+    } else if (norm.brand) {
+      const key = `name:${String(norm.brand).toLowerCase()}`;
+      if (!brandCache.has(key)) {
+        const b = await Brand.findOne({
+          company_id: companyId,
+          name: { $regex: new RegExp(`^${escapeRegex(String(norm.brand))}$`, 'i') },
+        }).select('_id').lean();
+        brandCache.set(key, b || null);
+      }
+      const resolved = brandCache.get(key);
+      if (resolved) brand_id = resolved._id;
+    }
+
+    // ── Numeric + boolean fields ─────────────────────────────
+    const num  = (v, def = 0) => (v === '' || v == null) ? def : (parseFloat(v) || def);
+    const bool = (v, def = true) => {
+      if (v === '' || v == null) return def;
+      if (typeof v === 'boolean') return v;
+      const s = String(v).trim().toLowerCase();
+      if (['true', '1', 'yes', 'y', 'active'].includes(s)) return true;
+      if (['false', '0', 'no', 'n', 'inactive'].includes(s)) return false;
+      return def;
+    };
+    const str  = (v, def = '') => (v == null ? def : String(v).trim());
+
+    // ── Build the product payload ────────────────────────────
+    const min_stock_level = num(norm.min_stock_level, 0);
+    const reorder_level   = num(norm.reorder_level,   0);
+    const productData = {
+      company_id: companyId,
+      created_by: req.user._id || req.user.id,
+      created_by_type: createdByType,
+      status: 'active',
+      name: norm.name,
+      code: norm.code,
+      category_id,
+      sub_category_id,
+      brand_id,
+      unit:          str(norm.unit,          ''),
+      size:          str(norm.size,          ''),
+      finish:        str(norm.finish,        ''),
+      thickness:     str(norm.thickness,     ''),
+      material:      str(norm.material,      ''),
+      color:         str(norm.color,         ''),
+      design:        str(norm.design,        ''),
+      description:   str(norm.description,   ''),
+      purchase_price:  num(norm.purchase_price,  0),
+      selling_price:   num(norm.selling_price,   0),
+      dealer_price:    num(norm.dealer_price,    0),
+      retail_price:    num(norm.retail_price,    0),
+      mrp:             num(norm.mrp,             0),
+      gst_percent:     num(norm.gst_percent,    18),
+      hsn_code:        str(norm.hsn_code,        ''),
+      min_stock_level,
+      reorder_level,
+      pcs_per_box:     norm.pcs_per_box     != null ? num(norm.pcs_per_box,     null) : null,
+      sqft_per_box:    norm.sqft_per_box    != null ? num(norm.sqft_per_box,    null) : null,
+      weight_per_box:  norm.weight_per_box  != null ? num(norm.weight_per_box,  null) : null,
+      barcode:         str(norm.barcode,         ''),
+      manufacturer:    str(norm.manufacturer,    ''),
+      origin:          str(norm.origin,          ''),
+      is_active:       bool(norm.is_active,    true),
+      online_visible:  bool(norm.online_visible, true),
+      dealer_visible:  bool(norm.dealer_visible, true),
+    };
+
+    let product;
+    let openingInventory = null;
+    try {
+      product = await Product.create(productData);
+    } catch (e) {
+      if (e?.code === 11000) { pushError(i, 'code', `Duplicate product code "${code}" (DB constraint).`); }
+      else pushError(i, 'product', `Failed to save: ${e.message || String(e)}`);
+      continue;
+    }
+
+    try {
+      openingInventory = await Inventory.create({
+        company_id:      companyId,
+        product_id:      product._id,
+        warehouse_id:    defaultWarehouseId,
+        physical_stock:  0,
+        available_stock: 0,
+        stock_in:        0,
+        stock_out:       0,
+        current_stock:   0,
+        low_stock_alert: product.min_stock_level || 0,
+        reorder_level:   product.reorder_level   || 0,
+        purchase_rate:   product.purchase_price  || 0,
+      });
+    } catch (invErr) {
+      console.warn(`[bulkUpload] Inventory stub failed for ${product._id}:`, invErr.message);
+    }
+
+    imported.push({
+      row: i + 2,
+      _id: product._id,
+      name: product.name,
+      code: product.code,
+      inventory_id: openingInventory?._id || null,
+    });
+  }
+
+  return sendSuccess(res, {
+    total,
+    imported: imported.length,
+    errors,
+    imported_items: imported,
+  }, `Bulk upload complete: ${imported.length} of ${total} product(s) imported.`, 200);
+}
+
 module.exports = {
   productsForSelect,
   listProducts, listAllProducts, getCompanyTaxonomy, getProductTaxonomy, getProduct, createProduct, updateProduct, deleteProduct,
   searchProducts, getRecycleBin, restoreProduct, checkProductTransactions,
+  bulkUploadProducts,
 }
