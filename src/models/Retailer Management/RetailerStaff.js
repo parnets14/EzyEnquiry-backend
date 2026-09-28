@@ -51,6 +51,21 @@ const salaryBreakdownSchema = new mongoose.Schema(
     // Amount (rupees) when type=fixed; percentage when type=percentage
     incentive_value: { type: Number, default: 0, min: 0 },
 
+    // Base amount the incentive % is applied to (For the Add Staff form's
+    // "Amount × Percentage" pair, e.g. ₹10,000 at 10% = ₹11,000).
+    incentive_base_amount: { type: Number, default: 0, min: 0 },
+
+    // Incentive slabs — "when sales reach sales_amount, pay incentive_pct %".
+    // The highest reached slab applies. Sorted ascending by sales_amount.
+    incentive_slabs: {
+      type: [{
+        _id: false,
+        sales_amount:  { type: Number, default: 0, min: 0 },
+        incentive_pct: { type: Number, default: 0, min: 0 },
+      }],
+      default: [],
+    },
+
     // Sales-based commission: % of each invoice/order value
     sales_percentage: { type: Number, default: 0, min: 0, max: 100 },
 
@@ -58,6 +73,23 @@ const salaryBreakdownSchema = new mongoose.Schema(
     discount_access: { type: Boolean, default: false },
     // Maximum discount % they are allowed to give
     max_discount_percent: { type: Number, default: 0, min: 0, max: 100 },
+
+    // Per-product discount limits: the staff can discount each listed product
+    // by at most `discount` %. Private to the staff profile.
+    // mrp / retailPrice are snapshotted for display so the form doesn't need
+    // to re-join the catalogue to show a price preview.
+    product_discounts: {
+      type: [{
+        _id: false,
+        id:          { type: String, default: '' },
+        name:        { type: String, default: '' },
+        code:        { type: String, default: '' },
+        mrp:         { type: Number, default: 0, min: 0 },
+        retailPrice: { type: Number, default: 0, min: 0 },
+        discount:    { type: Number, default: 0, min: 0, max: 100 },
+      }],
+      default: [],
+    },
 
     notes: { type: String, default: '' },
   },
@@ -82,6 +114,13 @@ const retailerStaffSchema = new mongoose.Schema(
 
     // Optional role label (e.g. "Sales Executive", "Store Manager")
     designation: { type: String, default: '' },
+
+    // Custom role access name created by the owner (e.g. "Cashier",
+    // "Floor Manager"). This is a free-text label that sits alongside
+    // `designation`; the granular permission control is still
+    // `staff_app_access`. Kept separate so a preset designation and a
+    // custom access name can both be recorded.
+    role_access: { type: String, default: '' },
 
     // Modules this staff can see in the Retailer App.
     // Empty array = no restriction (all modules accessible).

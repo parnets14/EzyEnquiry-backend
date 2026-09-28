@@ -6,7 +6,8 @@
  * Add staff  → name (required), mobile (required), email (optional)
  * Access     → staff_app_access: array of module keys the staff can see
  * Salary     → salary_breakdown: fixed_salary, incentive_type/value,
- *               sales_percentage, discount_access, max_discount_percent
+ *               incentive_base_amount, incentive_slabs, sales_percentage,
+ *               discount_access, max_discount_percent, product_discounts
  *
  * All routes are scoped to req.user.company_id (the retailer's company).
  * Only the Retailer owner role can manage staff (enforced in routes).
@@ -37,6 +38,11 @@ function normaliseMobile(value) {
   return String(value || '').replace(/\D/g, '').slice(-10);
 }
 
+/** Escape user input before embedding it in a RegExp (prevents regex injection). */
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Validate and de-duplicate the staff_app_access array.
  * Accepts an array OR a comma-separated string.
@@ -59,6 +65,48 @@ function parseAccessModules(raw) {
 }
 
 /**
+ * Sanitise incentive slabs: keep only rows with a positive sales amount and a
+ * non-negative percentage, de-duplicate by sales amount (last one wins), and
+ * sort ascending so "highest reached slab applies" is a simple scan.
+ */
+function sanitizeSlabs(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Map();
+  for (const s of raw) {
+    const amount = Number(s?.sales_amount);
+    const pct    = Number(s?.incentive_pct);
+    if (!isFinite(amount) || amount <= 0) continue;
+    if (!isFinite(pct) || pct < 0) continue;
+    seen.set(amount, { sales_amount: amount, incentive_pct: pct });
+  }
+  return [...seen.values()].sort((a, b) => a.sales_amount - b.sales_amount);
+}
+
+/**
+ * Sanitise per-product discount authorizations. Keeps rows that reference a
+ * product and carry a 0–100 discount. mrp/retailPrice are display snapshots.
+ */
+function sanitizeProductDiscounts(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Map();
+  for (const d of raw) {
+    const id = String(d?.id || d?._id || '').trim();
+    if (!id) continue;
+    const discount = Number(d?.discount);
+    if (!isFinite(discount) || discount < 0 || discount > 100) continue;
+    seen.set(id, {
+      id,
+      name:        String(d?.name || '').trim(),
+      code:        String(d?.code || '').trim(),
+      mrp:         Math.max(0, Number(d?.mrp) || 0),
+      retailPrice: Math.max(0, Number(d?.retailPrice ?? d?.retail_price) || 0),
+      discount,
+    });
+  }
+  return [...seen.values()];
+}
+
+/**
  * Sanitise salary breakdown fields from request body.
  * Only fields that were actually supplied are included in the result
  * so callers can do a safe merge without wiping untouched fields.
@@ -73,8 +121,16 @@ function parseSalaryBreakdown(body) {
   if (body.incentive_type !== undefined)
     bd.incentive_type = validTypes.includes(body.incentive_type) ? body.incentive_type : 'none';
 
-  if (body.incentive_value !== undefined)
-    bd.incentive_value = Math.max(0, Number(body.incentive_value) || 0);
+  // DEPRECATED — the "Amount (₹) × Percentage (%)" pair was removed from the
+  // Add Staff form to match the wholesaler, whose incentive model is slabs-only.
+  // Force these to 0 so values saved by an older build cannot linger on the
+  // record and still skew the incentive preview.
+  bd.incentive_value = Math.max(0, Number(body.incentive_value) || 0);
+  bd.incentive_base_amount = 0;
+
+  // Incentive slabs (sales amount → incentive %).
+  if (body.incentive_slabs !== undefined)
+    bd.incentive_slabs = sanitizeSlabs(body.incentive_slabs);
 
   if (body.sales_percentage !== undefined)
     bd.sales_percentage = Math.min(100, Math.max(0, Number(body.sales_percentage) || 0));
@@ -84,6 +140,10 @@ function parseSalaryBreakdown(body) {
 
   if (body.max_discount_percent !== undefined)
     bd.max_discount_percent = Math.min(100, Math.max(0, Number(body.max_discount_percent) || 0));
+
+  // Per-product discount limits.
+  if (body.product_discounts !== undefined)
+    bd.product_discounts = sanitizeProductDiscounts(body.product_discounts);
 
   if (body.salary_notes !== undefined)
     bd.notes = String(body.salary_notes || '').trim();
@@ -174,7 +234,7 @@ async function getStaff(req, res) {
  */
 async function addStaff(req, res) {
   if (!ownerOnly(req, res)) return;
-  const { name, mobile, email, designation } = req.body;
+  const { name, mobile, email, designation, role_access } = req.body;
 
   // ── Validation ────────────────────────────────────────────
   if (!name || !String(name).trim()) {
@@ -209,6 +269,7 @@ async function addStaff(req, res) {
     mobile:           digits,
     email:            email ? String(email).toLowerCase().trim() : '',
     designation:      designation ? String(designation).trim() : '',
+    role_access:      role_access ? String(role_access).trim() : '',
     staff_app_access: modules,
     salary_breakdown: salaryBd,
     is_active:        true,
@@ -228,10 +289,11 @@ async function updateStaff(req, res) {
   if (!staff) return sendError(res, 'Staff member not found.', 404);
 
   // ── Profile ───────────────────────────────────────────────
-  const { name, mobile, email, designation, is_active } = req.body;
+  const { name, mobile, email, designation, role_access, is_active } = req.body;
 
   if (name        !== undefined) staff.name        = String(name).trim();
   if (designation !== undefined) staff.designation = String(designation).trim();
+  if (role_access !== undefined) staff.role_access = String(role_access).trim();
   if (is_active   !== undefined) staff.is_active   = is_active !== false && is_active !== 'false';
 
   if (email !== undefined)
@@ -300,6 +362,100 @@ async function deleteStaff(req, res) {
   sendSuccess(res, null, 'Staff member deleted.');
 }
 
+// ─── GET /api/retailer/staff/:id/incentive ───────────────────
+/**
+ * Current-month sales + earned incentive for a staff member.
+ *
+ * ATTRIBUTION CAVEAT — read before relying on this number:
+ * Retailer staff log in via OTP against the RetailerStaff collection and there
+ * is no `user_id` linking them to the `User` documents that orders reference in
+ * `Order.created_by`. Orders placed while a staff member is logged in are
+ * stamped with the **retailer owner's** User id. So per-staff sales cannot be
+ * derived from Order.created_by.
+ *
+ * This endpoint therefore matches orders by the staff member's NAME in
+ * `created_by_name` / `created_by_person`, scoped to the owner's company.
+ * That is a best-effort match: it is correct only when the staff member's name
+ * is recorded on the order. `basis` is returned so the UI can label it.
+ *
+ * Also returns the slab that applies, reusing the same "highest reached slab
+ * wins" rule as the wholesaler employee incentive.
+ */
+async function getStaffIncentive(req, res) {
+  if (!ownerOnly(req, res)) return;
+
+  const staff = await RetailerStaff.findOne({
+    _id: req.params.id,
+    company_id: req.user.company_id,
+  }).lean();
+  if (!staff) return sendError(res, 'Staff member not found.', 404);
+
+  const bd    = staff.salary_breakdown || {};
+  const slabs = sanitizeSlabs(bd.incentive_slabs || []);
+
+  // ── Current month window ─────────────────────────────────
+  const now  = new Date();
+  const from = new Date(now.getFullYear(), now.getMonth(), 1);
+  const to   = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+  // ── Best-effort sales match by name ──────────────────────
+  let monthSales = 0;
+  let orderCount = 0;
+  try {
+    const Order = require('../../models/Marketplace Management/Order');
+    const name  = String(staff.name || '').trim();
+    if (name) {
+      const rows = await Order.aggregate([
+        {
+          $match: {
+            company_id: { $in: [req.user.company_id] },
+            status: { $ne: 'Cancelled' },
+            created_at: { $gte: from, $lt: to },
+            $or: [
+              { created_by_name:   { $regex: `^${escapeRegex(name)}$`, $options: 'i' } },
+              { created_by_person: { $regex: `^${escapeRegex(name)}$`, $options: 'i' } },
+            ],
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: { $ifNull: ['$total_amount', '$total'] } },
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+      monthSales = rows[0]?.total || 0;
+      orderCount = rows[0]?.count || 0;
+    }
+  } catch {
+    // Order model shape differences must not break the staff form.
+    monthSales = 0;
+    orderCount = 0;
+  }
+
+  // ── Highest reached slab wins ────────────────────────────
+  let pct = 0;
+  for (const slab of slabs) {
+    if (monthSales >= slab.sales_amount) pct = slab.incentive_pct;
+  }
+  const amount = Math.round((monthSales * pct) / 100 * 100) / 100;
+
+  sendSuccess(res, {
+    periodLabel: from.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }),
+    from,
+    to,
+    monthSales,
+    orderCount,
+    pct,
+    amount,
+    slabs,
+    // How the sales figure was derived — the UI labels the card with this.
+    basis: 'matched_by_name',
+    basisNote: 'Matched on the staff name recorded against orders.',
+  });
+}
+
 module.exports = {
   getAvailableModules,
   listStaff,
@@ -308,4 +464,5 @@ module.exports = {
   updateStaff,
   toggleStaffActive,
   deleteStaff,
+  getStaffIncentive,
 };

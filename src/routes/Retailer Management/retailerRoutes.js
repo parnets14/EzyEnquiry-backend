@@ -21,7 +21,32 @@ async function listRetailerCategories(req, res) {
       parent_id: null,
       is_active: { $ne: false },
     }).sort({ name: 1 }).select('_id name code').lean()
-    res.json({ success: true, data: cats })
+
+    // Nest each category's sub-categories so the app can render the
+    // category → sub-category tree from a single response (the wholesaler
+    // taxonomy endpoint returns this shape, and the Add Product form reads
+    // `category.sub_categories` to decide whether to show the sub-category step).
+    // One extra query for the whole set rather than one per category.
+    const catIds = cats.map(c => c._id)
+    const subs = catIds.length
+      ? await Category.find({
+          company_id: req.user.company_id,
+          parent_id: { $in: catIds },
+          is_active: { $ne: false },
+        }).sort({ name: 1 }).select('_id name code parent_id').lean()
+      : []
+
+    const byParent = new Map()
+    for (const s of subs) {
+      const key = String(s.parent_id)
+      if (!byParent.has(key)) byParent.set(key, [])
+      byParent.get(key).push(s)
+    }
+
+    res.json({
+      success: true,
+      data: cats.map(c => ({ ...c, sub_categories: byParent.get(String(c._id)) || [] })),
+    })
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
   }
@@ -61,7 +86,9 @@ async function createRetailerCategory(req, res) {
     const existing = await Category.findOne({ company_id: req.user.company_id, name: new RegExp(`^${name.trim()}$`, 'i'), parent_id: null }).lean()
     if (existing) return res.status(409).json({ success: false, message: `Category "${name}" already exists.` })
     const cat = await Category.create({ company_id: req.user.company_id, name: name.trim(), code: code || '', parent_id: null })
-    res.status(201).json({ success: true, data: cat })
+    // Return the same shape as listRetailerCategories (with sub_categories) so
+    // the app can drop the new category straight into its state.
+    res.status(201).json({ success: true, data: { ...cat.toObject(), sub_categories: [] } })
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
   }
@@ -156,6 +183,8 @@ function requireRetailerModule(moduleKey) {
 router.get   ('/staff/modules',    staffCtrl.getAvailableModules)
 router.get   ('/staff',            staffCtrl.listStaff)
 router.post  ('/staff',            staffCtrl.addStaff)
+// /incentive must be declared before '/staff/:id' so it isn't swallowed as an id.
+router.get   ('/staff/:id/incentive', staffCtrl.getStaffIncentive)
 router.get   ('/staff/:id',        staffCtrl.getStaff)
 router.put   ('/staff/:id',        staffCtrl.updateStaff)
 router.patch ('/staff/:id/toggle', staffCtrl.toggleStaffActive)
