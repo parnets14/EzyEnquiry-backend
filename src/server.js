@@ -166,6 +166,18 @@ app.use('/api/staff-management',  authenticate, requireCompany, staffManagementR
 app.use('/api/wholesaler/auth',   wholesalerAuthRoutes)
 app.use('/api/wholesaler',        authenticate, requireApprovedSeller, wholesalerCatalogRoutes)
 app.use('/api/retailer/auth',     retailerAuthRoutes)
+
+// ── Retailer Admin — cross-company visibility (Super Admin) ────
+// Mounted BEFORE the retailer identity guard so a Super Admin token
+// (which is not a retailer identity) can still reach these endpoints.
+const retailerAdminRoutes     = require('./routes/Retailer Management/retailerAdminRoutes')
+const retailerAdminDataRoutes = require('./routes/Retailer Management/retailerAdminDataRoutes')
+app.use('/api/retailer/admin/companies', authenticate, retailerAdminRoutes)
+app.use('/api/retailer/admin/users',     authenticate, retailerAdminDataRoutes.users)
+app.use('/api/retailer/admin/orders',    authenticate, retailerAdminDataRoutes.orders)
+app.use('/api/retailer/admin/enquiries', authenticate, retailerAdminDataRoutes.enquiries)
+app.use('/api/retailer/admin/products',  authenticate, retailerAdminDataRoutes.products)
+
 app.use('/api/retailer',          authenticate, requireRetailerIdentity, retailerRoutes)
 
 // Retailer identities must use the dedicated API and cannot enter ERP/admin modules.

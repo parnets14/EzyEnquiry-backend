@@ -186,7 +186,7 @@ Node.js + Express + PostgreSQL REST API supporting all 28 modules from the 45-da
    npm start      # Production
    ```
 
-Server runs on `http://localhost:5000`
+Server runs on `https://ezyenquiry-backend.onrender.com`
 
 ---
 
@@ -543,10 +543,10 @@ npm run migrate
 npm run seed
 
 # Test health endpoint
-curl http://localhost:5000/health
+curl https://ezyenquiry-backend.onrender.com/health
 
 # Test login
-curl -X POST http://localhost:5000/api/auth/login \
+curl -X POST https://ezyenquiry-backend.onrender.com/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"ezyenquiry@gmail.com","password":"ezyenquiry@123"}'
 ```

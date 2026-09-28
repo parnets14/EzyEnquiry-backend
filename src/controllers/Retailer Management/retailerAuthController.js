@@ -294,6 +294,58 @@ async function uploadDocs(req, res) {
 }
 
 async function me(req, res) {
+  // RetailerStaff authenticate with a token whose id lives in the RetailerStaff
+  // collection, not User — so branch before querying User.
+  if (req.user?.role === 'RetailerStaff' && req.retailerStaff) {
+    const staff = req.retailerStaff
+    const company = staff.company_id
+      ? await Company.findById(staff.company_id)
+          .select('company_code name owner_name biz_type mobile email gst_number pan_number address city state pin_code status is_active reject_reason subscription_plan docs_gst docs_pan docs_address docs_biz addresses kyc_documents')
+          .lean()
+      : null
+
+    return sendSuccess(res, {
+      _id:             staff._id,
+      name:            staff.name,
+      mobile:          staff.mobile,
+      email:           staff.email || '',
+      designation:     staff.designation || '',
+      role:            'RetailerStaff',
+      accountType:     'retailer_staff',
+      company_id:      staff.company_id,
+      company_name:    company?.name || null,
+      company_status:  company?.status || null,
+      subscription_plan: company?.subscription_plan || 'Free',
+      // Modules this staff may see. Empty array = no restriction.
+      staff_app_access: staff.staff_app_access || [],
+      staffAppAccess:   staff.staff_app_access || [],
+      is_active:        staff.is_active !== false,
+      is_approved:      company?.status === 'Approved' && company?.is_active !== false,
+      capabilities:     capabilities(),
+      kyc_documents:    safeKycDocuments(company),
+      company: company ? {
+        id: company._id,
+        company_code: company.company_code || '',
+        name: company.name || '',
+        owner_name: company.owner_name || '',
+        biz_type: company.biz_type || '',
+        mobile: company.mobile || '',
+        email: company.email || '',
+        gst_number: company.gst_number || '',
+        pan_number: company.pan_number || '',
+        address: company.address || '',
+        city: company.city || '',
+        state: company.state || '',
+        pin_code: company.pin_code || '',
+        addresses: company.addresses || [],
+        status: company.status || '',
+        is_active: company.is_active !== false,
+        reject_reason: company.status === 'Rejected' ? company.reject_reason || '' : '',
+        subscription_plan: company.subscription_plan || 'Free',
+      } : null,
+    })
+  }
+
   const userDoc = await User.findById(req.user._id).select('-password_hash').lean()
   if (!userDoc) return sendError(res, 'User not found.', 404)
   return sendSuccess(res, await buildUserResponse(userDoc))

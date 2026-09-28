@@ -19,17 +19,21 @@
  */
 const mongoose = require('mongoose');
 
-// ── Staff App module keys — match Staff App navigator screen groups ────────────
+// ── Retailer App module keys — MUST match the modules offered by the
+//    Retailer App "Add Staff" screen and getAvailableModules() controller.
+//    Keep these three lists in sync:
+//      1. this enum
+//      2. retailerStaffController.getAvailableModules()
+//      3. RetailerApp AddEditStaffScreen RETAILER_MODULES + StaffListScreen MODULE_LABELS
 const RETAILER_APP_MODULES = [
-  'dashboard',    // Dashboard tab — always visible
-  'customers',    // Customers tab + add/view customer
-  'quotations',   // Quotations screen + create/view quotation
-  'orders',       // Orders tab + order detail
-  'dispatches',   // Dispatches screen + dispatch detail
-  'finance',      // Finance tab overview
-  'invoices',     // Invoices screen + invoice detail
-  'collections',  // Collections screen + collection detail (record payment)
-  'notifications',// Notifications screen
+  'dashboard',     // Dashboard summary
+  'products',      // Browse product catalogue
+  'enquiries',     // Create & track enquiries
+  'orders',        // Place & track orders
+  'invoices',      // View & pay invoices
+  'customers',     // Manage customers
+  'notifications', // In-app notifications
+  'reports',       // Sales & order reports
 ];
 
 // ── Salary breakdown sub-schema ───────────────────────────────

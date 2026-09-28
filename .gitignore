@@ -9,7 +9,13 @@ uploads/kyc/*
 dist/
 *.log
 
-# Firebase credentials
+# Firebase / Google Cloud service-account credentials.
+# NEVER commit these - they contain a private key that grants admin access
+# to the Firebase project. GitHub push protection will reject the push too.
 firebase-service-account.json
+*firebase-adminsdk*.json
+*service-account*.json
+*-adminsdk-*.json
+google-credentials*.json
 
 _srccheck.js

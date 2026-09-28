@@ -47,6 +47,19 @@ function imageUrlList(value) {
   }
 }
 
+// Parse the category-specific dynamic `attributes` object. The client sends it
+// as a JSON string inside multipart form-data. Returns a plain object (never null).
+function attrsObj(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
 // Find-or-create a Brand by name under the retailer's company.
 async function resolveBrand(name, companyId) {
   const clean = str(name)
@@ -113,6 +126,8 @@ function productResponse(product) {
     },
     added_by_type: product.created_by_type || 'Retailer',
     can_manage: true,
+    attributes: product.attributes || {},
+    category_type: product.category_type || '',
     image_urls: product.image_urls || [],
     status: product.status,
     created_at: product.created_at,
@@ -180,6 +195,10 @@ async function createMyProduct(req, res) {
     unit: str(body.unit) || 'Box',
     gst_percent: num(body.gst_percent) ?? 18,
     description: str(body.description),
+
+    // Category-specific dynamic fields (granite/marble/tiles/…)
+    attributes: attrsObj(body.attributes),
+    category_type: str(body.category_type),
 
     purchase_price: money(body.purchase_rate || body.purchase_price),
     landing_cost: money(body.landing_cost),
@@ -312,6 +331,8 @@ async function updateMyProduct(req, res) {
   })
   if (has('unit')) updateData.unit = str(body.unit) || 'Box'
   if (has('gst_percent')) updateData.gst_percent = num(body.gst_percent) ?? 18
+  if (has('attributes')) updateData.attributes = attrsObj(body.attributes)
+  if (has('category_type')) updateData.category_type = str(body.category_type)
 
   const moneyFields = [
     ['landing_cost', ['landing_cost']],
