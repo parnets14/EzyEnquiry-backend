@@ -52,7 +52,14 @@ const inventorySchema = new mongoose.Schema(
 );
 
 inventorySchema.index({ company_id: 1 });
-inventorySchema.index({ product_id: 1, warehouse_id: 1 }, { unique: true });
+// Stock buckets are per company, so company_id MUST be part of the unique key.
+// It was previously { product_id, warehouse_id } alone, which meant only ONE
+// company in the whole database could ever hold stock for a given product.
+// Every other company's stock-in upsert matched no document, attempted an insert
+// and died with E11000 duplicate key → 500. That is what broke "Buy Item" for a
+// retailer buying a product the wholesaler already stocks.
+// Migration: run `node migrate-inventory-index.js` (drops the old index).
+inventorySchema.index({ company_id: 1, product_id: 1, warehouse_id: 1 }, { unique: true });
 inventorySchema.index({ company_id: 1, available_stock: 1 });
 
 module.exports = mongoose.model('Inventory', inventorySchema);

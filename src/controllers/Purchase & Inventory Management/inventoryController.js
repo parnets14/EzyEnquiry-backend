@@ -319,21 +319,28 @@ require('../../models/Purchase & Inventory Management/Warehouse');
  * @param {Object} order  the created order document (needs product_id, qty, etc.)
  * @param {ObjectId} userId  the acting user (for the movement log)
  */
-async function deductStockForOrder(order, userId) {
+async function deductStockForOrder(order, userId, companyId) {
   try {
     if (!order?.product_id || !order?.qty) return false;
     const qty = Math.abs(parseFloat(order.qty)) || 0;
     if (qty <= 0) return false;
 
+    // Stock buckets are company-scoped, and an order's stock lives with the
+    // SELLER (Order.company_id). Never look a bucket up without a company: now
+    // that several companies can stock the same product, an unscoped findOne
+    // would silently hit whichever company Mongo returned first.
+    const owner = companyId || order.company_id || order.seller_company_id?._id || order.seller_company_id || null;
+    if (!owner) return false;
+
     // Find the inventory record for this product. Prefer the order's warehouse
-    // when it names one, but fall back to any record for the product (e.g. the
+    // when it names one, but fall back to the owner's largest bucket (e.g. the
     // "Unassigned" record) so stock still deducts when warehouses don't line up.
     let inv = null;
     if (order.warehouse_id) {
-      inv = await Inventory.findOne({ product_id: order.product_id, warehouse_id: order.warehouse_id });
+      inv = await Inventory.findOne({ company_id: owner, product_id: order.product_id, warehouse_id: order.warehouse_id });
     }
     if (!inv) {
-      inv = await Inventory.findOne({ product_id: order.product_id }).sort({ available_stock: -1 });
+      inv = await Inventory.findOne({ company_id: owner, product_id: order.product_id }).sort({ available_stock: -1 });
     }
     if (!inv) return false; // no inventory record for this product — skip silently
 
@@ -378,18 +385,23 @@ async function deductStockForOrder(order, userId) {
  * Restore an order's quantity back to inventory (on cancellation), reversing a
  * prior booking deduction. Never throws. Returns true if a restore happened.
  */
-async function restoreStockForOrder(order, userId) {
+async function restoreStockForOrder(order, userId, companyId) {
   try {
     if (!order?.product_id || !order?.qty) return false;
     const qty = Math.abs(parseFloat(order.qty)) || 0;
     if (qty <= 0) return false;
 
+    // Company-scoped for the same reason as deductStockForOrder — the quantity
+    // belongs to the SELLER's bucket, never to an arbitrary company's.
+    const owner = companyId || order.company_id || order.seller_company_id?._id || order.seller_company_id || null;
+    if (!owner) return false;
+
     let inv = null;
     if (order.warehouse_id) {
-      inv = await Inventory.findOne({ product_id: order.product_id, warehouse_id: order.warehouse_id });
+      inv = await Inventory.findOne({ company_id: owner, product_id: order.product_id, warehouse_id: order.warehouse_id });
     }
     if (!inv) {
-      inv = await Inventory.findOne({ product_id: order.product_id }).sort({ available_stock: -1 });
+      inv = await Inventory.findOne({ company_id: owner, product_id: order.product_id }).sort({ available_stock: -1 });
     }
     if (!inv) return false;
 
@@ -507,6 +519,21 @@ async function listInventory(req, res) {
   if (!isSuperAdmin && req.user.company_id) query.company_id = req.user.company_id;
   if (warehouse_id) query.warehouse_id = warehouse_id;
 
+  // ── Ownership guard ────────────────────────────────────────────────────────
+  // Only show stock for products THIS company actually owns. A company's inventory
+  // should never list another company's product; without this, a bucket written by
+  // `adjustStock` against a foreign product_id (it keys on the CALLER's company_id)
+  // would surface a product the user never added.
+  //
+  // NOTE: this must be a real query clause (not a populate `match`) so that
+  // `countDocuments` and `find` agree — otherwise pagination.total counts rows
+  // that the populate match then drops, and the UI shows a phantom page.
+  if (!isSuperAdmin && req.user.company_id) {
+    const ownIds = await Product.find({ company_id: req.user.company_id })
+      .select('_id').lean();
+    query.product_id = { $in: ownIds.map(p => p._id) };
+  }
+
   // Stock-status filter
   if (stock_status === 'available') query.available_stock = { $gt: 0 };
   if (stock_status === 'low') {
@@ -580,7 +607,12 @@ async function getInventoryItem(req, res) {
   const doc = await Inventory.findOne(scope)
     .populate({
       path: 'product_id',
-      select: 'code name unit brand_id category_id design size finish images',
+      select: 'code name unit brand_id category_id design size finish images company_id',
+      // Ownership guard (see listInventory): never return a record whose product
+      // belongs to another company, even if the inventory row carries our company_id.
+      match: req.user.role !== 'Super Admin' && req.user.company_id
+        ? { company_id: req.user.company_id }
+        : undefined,
       populate: [
         { path: 'brand_id',    select: 'name' },
         { path: 'category_id', select: 'name' },
@@ -727,12 +759,25 @@ async function adjustStock(req, res) {
     return sendError(res, 'Could not resolve the owning company for this product.', 400);
   }
 
-  // The inventory unique index is { product_id, warehouse_id } (company_id is
-  // NOT part of it). So match by product + warehouse only — matching on
-  // company_id too can miss an existing record and cause a duplicate-key error
-  // on insert. company_id is only applied when creating a fresh record.
+  // ── Ownership guard ────────────────────────────────────────────────────────
+  // Stock may only be recorded against a product the CALLER's company owns.
+  // Without this, a company could file stock against a foreign product_id and
+  // create a bucket under its own name — which then showed up as "a product I
+  // never added" in that company's Inventory list. Super Admin is exempt (it
+  // legitimately operates across companies).
+  if (req.user.role !== 'Super Admin') {
+    const owner = await Product.findById(product_id).select('company_id').lean();
+    if (!owner) return sendError(res, 'Product not found.', 404);
+    if (String(owner.company_id) !== String(companyId)) {
+      return sendError(res, 'You can only adjust stock for your own products.', 403);
+    }
+  }
+
+  // The unique index is { company_id, product_id, warehouse_id } — one bucket per
+  // company per product per warehouse. The filter MUST be company-scoped, or this
+  // would find and adjust a DIFFERENT company's stock bucket for the same product.
   const wh = warehouse_id || null;
-  const filter = { product_id, warehouse_id: wh };
+  const filter = { company_id: companyId, product_id, warehouse_id: wh };
 
   let inv = await Inventory.findOne(filter);
   if (!inv) {

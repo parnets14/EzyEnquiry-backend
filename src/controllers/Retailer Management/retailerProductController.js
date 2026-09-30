@@ -85,6 +85,13 @@ async function resolveCategory(name, companyId, parentId = null) {
 
 function productResponse(product) {
   return {
+    // The app keys product lists, pickers and keyExtractors by `_id` (same as the
+    // marketplace DTO in retailerMarketplaceController and the wholesaler's
+    // catalogue). Emitting only `id` here made every picker that reads `opt._id`
+    // hold a product whose id was undefined: the row displayed fine (name/unit are
+    // present) but validation and the API payload got no product_id — "Select a
+    // product" even after choosing one, and purchases/sales saved with no product.
+    _id: product._id,
     id: product._id,
     code: product.code,
     name: product.name,
@@ -355,6 +362,12 @@ async function updateMyProduct(req, res) {
   if (has('product_type')) updateData.product_type = str(body.product_type) || 'Regular Product'
   if (has('new_arrival')) updateData.new_arrival = bool(body.new_arrival)
   if (has('featured')) updateData.featured = bool(body.featured)
+
+  // Lifecycle: active | inactive | out_of_stock | discontinued.
+  // Set by the catalog action menu (Mark Out of Stock / Discontinued /
+  // Activate-Deactivate). Mirrors wholesalerProductController.updateProduct.
+  if (has('status'))    updateData.status    = str(body.status)
+  if (has('is_active')) updateData.is_active = bool(body.is_active)
 
   const uploadedImages = (req.files || []).map(file => `/uploads/images/${file.filename}`)
   if (has('image_urls') || uploadedImages.length > 0) {

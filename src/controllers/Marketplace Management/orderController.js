@@ -462,7 +462,7 @@ async function updateOrderStatus(req, res) {
   if (status === 'Cancelled') {
     // Legacy path: stock was already deducted at booking (direct physical/available deduct).
     if (order.stock_deducted) {
-      const restored = await restoreStockForOrder(order, req.user._id);
+      const restored = await restoreStockForOrder(order, req.user._id, req.user.company_id);
       if (restored) {
         await Order.findByIdAndUpdate(req.params.id, { stock_deducted: false });
         if (updated) updated.stock_deducted = false;

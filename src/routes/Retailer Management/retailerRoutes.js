@@ -208,6 +208,9 @@ router.post('/kyc/documents', retailerKycUpload, auth.uploadDocs)
 // Dashboard & Products — visible to all (owner + staff with access)
 router.get('/dashboard', requireRetailerModule('dashboard'), marketplace.dashboard)
 router.get('/products',  requireRetailerModule('products'),  marketplace.listProducts)
+// ⚠️ '/products/filters' MUST stay above '/products/:id' — Express matches in
+// order, so registering it after would let ':id' capture the literal "filters".
+router.get('/products/filters', requireRetailerModule('products'), marketplace.getProductFilters)
 router.get('/products/:id', requireRetailerModule('products'), marketplace.getProduct)
 
 // Notifications

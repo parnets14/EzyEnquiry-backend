@@ -16,6 +16,7 @@ const Order       = require('../../models/Marketplace Management/Order');
 const Inventory   = require('../../models/Purchase & Inventory Management/Inventory');
 const Receivable  = require('../../models/Finance Management/Receivable');
 const Transaction = require('../../models/Finance Management/Transaction');
+const RetailerStaff = require('../../models/Retailer Management/RetailerStaff');
 const mongoose    = require('mongoose');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,6 +189,27 @@ async function createSale(req, res) {
   const paidAmount  = parseFloat(req.body.paid_amount || 0);
   const outstanding = grand_total - paidAmount;
 
+  // ── Sales staff assignment (RetailerApp "Assign to Sales Staff") ──────────
+  // Optional, and absent for the wholesaler ERP path. Validated against
+  // RetailerStaff — NOT User — and scoped to the caller's company, so a client
+  // cannot persist another company's staff id. The name is stored alongside the
+  // id so lists can render it without a populate across collections.
+  let salesStaffId   = null;
+  let salesStaffName = '';
+  if (req.body.sales_staff_id) {
+    const raw = req.body.sales_staff_id;
+    const resolved = typeof raw === 'object' && raw !== null ? String(raw._id || raw) : String(raw);
+    if (!mongoose.Types.ObjectId.isValid(resolved)) {
+      return sendError(res, 'Invalid sales_staff_id format.', 400);
+    }
+    const staff = await RetailerStaff.findOne({
+      _id: resolved, company_id: req.user.company_id,
+    }).select('name').lean();
+    if (!staff) return sendError(res, 'Sales staff not found in your company.', 404);
+    salesStaffId   = staff._id;
+    salesStaffName = staff.name || '';
+  }
+
   const sale = await Sale.create({
     ...req.body,
     sale_code:      await nextSaleCode(),
@@ -204,6 +226,8 @@ async function createSale(req, res) {
     sale_status:    req.body.sale_status    || 'Confirmed',
     sale_date:      req.body.sale_date      || new Date(),
     created_by:     req.user._id,
+    sales_staff_id:   salesStaffId,
+    sales_staff_name: salesStaffName,
   });
 
   // Create a matching Receivable so the sale shows up in the receivables

@@ -76,7 +76,15 @@ const productSchema = new mongoose.Schema(
 
     // Status & classification
     is_active:    { type: Boolean, default: true },
-    status:       { type: String, enum: ['active', 'deleted'], default: 'active' },
+    // Lifecycle. 'out_of_stock' and 'discontinued' are set by the catalog action
+    // menu (wholesaler + retailer) and drive the card's status badge; they must
+    // be in the enum or Mongoose rejects the update and the action appears to
+    // do nothing.
+    status: {
+      type: String,
+      enum: ['active', 'inactive', 'out_of_stock', 'discontinued', 'deleted'],
+      default: 'active',
+    },
     sales_type:   { type: String, default: 'Regular Sale' },
     product_type: { type: String, default: 'Regular Product' },
     source:       { type: String, default: 'admin' },   // 'admin' | 'wholesaler'

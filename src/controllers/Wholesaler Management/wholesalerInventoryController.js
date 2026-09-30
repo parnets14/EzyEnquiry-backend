@@ -10,6 +10,7 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
 const Inventory     = require('../../models/Purchase & Inventory Management/Inventory');
 const Warehouse     = require('../../models/Purchase & Inventory Management/Warehouse');
 const StockMovement = require('../../models/Purchase & Inventory Management/StockMovement');
+const Product       = require('../../models/Product Management/Product');
 const mongoose      = require('mongoose');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,6 +71,15 @@ async function listInventory(req, res) {
   ];
   if (category_id) productMatch.category_id = new mongoose.Types.ObjectId(category_id);
   if (brand_id)    productMatch.brand_id     = new mongoose.Types.ObjectId(brand_id);
+
+  // ── Ownership guard ────────────────────────────────────────────────────────
+  // An inventory row is only meaningful for a product THIS company actually owns.
+  // `adjustStock` keys the bucket on the caller's company_id, so a bad write could
+  // file stock against another company's product — such a row would show a product
+  // the user never added. Restrict the list to own products.
+  const ownIds = await Product.find({ company_id: req.user.company_id })
+    .select('_id').lean();
+  query.product_id = { $in: ownIds.map(p => p._id) };
 
   const [total, docs] = await Promise.all([
     Inventory.countDocuments(query),

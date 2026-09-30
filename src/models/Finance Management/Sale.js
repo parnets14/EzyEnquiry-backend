@@ -55,6 +55,15 @@ const saleSchema = new mongoose.Schema(
     sale_date:       { type: Date, default: null },
     notes:           { type: String, default: '' },
     created_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+    // ── Sales staff assignment (RetailerApp "Assign to Sales Staff") ───────
+    // The staff member who handled this sale. Deliberately NOT `created_by`
+    // (that is whoever typed the sale in) and NOT `Order.assigned_to`, which is
+    // `ref: 'User'` and drives staff visibility in the wholesaler ERP + CRM.
+    // `RetailerStaff` is a separate collection from `User`, so it needs its own
+    // field or the id would land in a ref that can never populate.
+    sales_staff_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'RetailerStaff', default: null },
+    sales_staff_name: { type: String, default: '' },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

@@ -586,6 +586,34 @@ async function getProduct(req, res) {
   return ok(res, productResponse(product, stocks.get(product._id.toString()), req.user), 'Product retrieved.')
 }
 
+// GET /api/retailer/products/filters
+// Distinct spec values across the catalogue the retailer can actually browse,
+// so the filter sheet offers every real option instead of sampling the first
+// page. Mirrors wholesalerProductController.getFilters.
+// NOTE: must stay registered BEFORE `/products/:id` (see the route-ordering note
+// in the routes file) or ':id' swallows 'filters'.
+async function getProductFilters(req, res) {
+  // Same visibility window as listProducts, so the options always describe the
+  // set of products the caller can actually see.
+  const query = { ...CATALOG_PRODUCT_QUERY }
+  const accessClause = await buildAccessClause(req)
+  query.$and = [...(query.$and || []), accessClause]
+
+  const distinct = (field) =>
+    Product.distinct(field, { ...query, [field]: { $nin: ['', null] } })
+
+  const [sizes, finishes, materials, colors] = await Promise.all([
+    distinct('size'), distinct('finish'), distinct('material'), distinct('color'),
+  ])
+
+  return ok(res, {
+    sizes: sizes.filter(Boolean).sort(),
+    finishes: finishes.filter(Boolean).sort(),
+    materials: materials.filter(Boolean).sort(),
+    colors: colors.filter(Boolean).sort(),
+  }, 'Filters retrieved.')
+}
+
 // Resolve the company whose customers the retailer works with. Retailers see
 // the ADMIN's customers (products are Admin-owned), so:
 //   1. If the app passes a specific company_id, use it (must be a real company).
@@ -1404,7 +1432,13 @@ async function cancelOrder(req, res) {
       ...order,
       product_id: order.product_id?._id || order.product_id,
     }
-    const restored = await restoreStockForOrder(restoreOrder, req.user._id)
+    // Stock lives in the SELLER's bucket — pass it explicitly, because an
+    // unscoped inventory lookup would be ambiguous across companies.
+    const restored = await restoreStockForOrder(
+      restoreOrder,
+      req.user._id,
+      order.seller_company_id?._id || order.seller_company_id || order.company_id
+    )
     if (restored) await Order.updateOne({ _id: order._id }, { stock_deducted: false })
   } else {
     // New reserve-bucket path: stock reserved when seller Accepted the order.
@@ -1746,6 +1780,7 @@ module.exports = {
   dashboard,
   listProducts,
   getProduct,
+  getProductFilters,
   listRetailerCustomers,
   createRetailerCustomer,
   updateRetailerCustomer,

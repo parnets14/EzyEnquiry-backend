@@ -54,6 +54,13 @@ const report     = require('../../controllers/Reports Management/reportControlle
 const dashboard  = require('../../controllers/Retailer Management/retailerDashboardController')
 const dispatch   = require('../../controllers/Marketplace Management/dispatchController')
 const retailerDispatch = require('../../controllers/Retailer Management/retailerDispatchController')
+const retailerOrder = require('../../controllers/Retailer Management/retailerOrderController')
+// packOrder is the marketplace controller's partial-fulfilment path: it raises the
+// invoice for just the packed qty, creates the dispatch, does the stock-out and
+// books the sale. It is already scoped to `company_id: req.user.company_id` — the
+// same seller scope used below — so the retailer route re-exports it rather than
+// duplicating a 330-line financial path. See retailerOrderController's header.
+const order      = require('../../controllers/Marketplace Management/orderController')
 const document   = require('../../controllers/System Management/documentController')
 
 const router = express.Router()
@@ -206,6 +213,35 @@ router.get('/reports/suppliers',  gate('reports'), report.getSupplierReport)
 router.get('/reports/inventory',  gate('reports'), report.getInventoryReport)
 router.get('/reports/analytics',  gate('reports'), report.getAnalytics)
 router.get('/reports/:type/export', gate('reports'), report.exportReport)
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SELLER ORDERS  (fulfilment — the retailer as the product owner)
+   ──────────────────────────────────────────────────────────────────────────
+   The /api/retailer/orders surface is the BUYER's view of an order (list my
+   purchases, cancel, track). A retailer that sells its own products had no way
+   to act as the seller: no accept, no pack. These four routes are that side.
+
+   Every query is scoped `{ company_id: req.user.company_id }` — for an Order
+   that is the SELLER's company, so a retailer can only ever touch orders raised
+   against products it sells. An order it placed as a buyer resolves to 404.
+   See retailerOrderController's header for the full scoping note.
+
+   `:id` is validated by `router.param('id', validateObjectIdParam('id'))` above.
+   Static segments (/orders/:id/pack, /orders/:id/status) sit under the same
+   `:id` param as the plain GET, so declaration order between them does not
+   matter here — none of them shadow another.
+
+   POST /orders/:id/pack is the PARTIAL fulfilment path: send 50 of an order of
+   100 and it raises an invoice for 50, creates the dispatch with the vehicle
+   details, deducts stock and books the sale. Calling it again for the remaining
+   50 appends a second package and a second invoice. It is also what makes
+   "create a dispatch ⇒ invoice is created automatically" true — the plain
+   POST /dispatches below does NOT raise an invoice.
+   ══════════════════════════════════════════════════════════════════════════ */
+router.get  ('/orders',             gate('dispatches'), retailerOrder.listSellerOrders)
+router.get  ('/orders/:id',         gate('dispatches'), retailerOrder.getSellerOrder)
+router.patch('/orders/:id/status',  gate('dispatches'), retailerOrder.updateSellerOrderStatus)
+router.post ('/orders/:id/pack',    gate('dispatches'), order.packOrder)
 
 /* ══════════════════════════════════════════════════════════════════════════
    DISPATCH  (wholesaler parity — same controller as /api/dispatches)
