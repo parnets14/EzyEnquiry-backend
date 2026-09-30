@@ -20,7 +20,9 @@ function companyScope(req) {
 
 /** GET /api/accounts/ledger/customer */
 async function getCustomerLedger(req, res) {
-  const { customer_id } = req.query;
+  // Accept the id from either the query (?customer_id=) — the ERP route convention —
+  // or the path (/accounts/customer/:id), which the retailer ERP surface uses.
+  const customer_id = req.query.customer_id || req.params.id;
   if (!customer_id) return sendError(res, 'customer_id is required.');
 
   const custScope = req.user?.company_id ? { company_id: req.user.company_id } : {};
@@ -105,7 +107,9 @@ async function getCustomerLedger(req, res) {
 
 /** GET /api/accounts/ledger/supplier */
 async function getSupplierLedger(req, res) {
-  const { supplier_id } = req.query;
+  // Accept the id from either the query (?supplier_id=) or the path (:id) — see
+  // getCustomerLedger for why both forms are supported.
+  const supplier_id = req.query.supplier_id || req.params.id;
   if (!supplier_id) return sendError(res, 'supplier_id is required.');
 
   const suppScope = req.user?.company_id ? { company_id: req.user.company_id } : {};

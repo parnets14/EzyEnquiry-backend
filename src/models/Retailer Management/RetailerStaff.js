@@ -34,6 +34,17 @@ const RETAILER_APP_MODULES = [
   'customers',     // Manage customers
   'notifications', // In-app notifications
   'reports',       // Sales & order reports
+  // ── ERP modules (added 2026-09-29, served by /api/retailer/erp/*) ──
+  'sales',         // Sales entry, list & report
+  'purchases',     // Purchase entry, list & suppliers
+  'inventory',     // Inventory, warehouses, stock transfers
+  'expenses',      // Expense entry, list & report
+  'payments',      // Receivables & payables
+  'accounts',      // Ledgers, cash book, bank book
+  'profit_loss',   // Profit & loss dashboard
+  'leads',         // CRM leads
+  'dispatches',    // Dispatch tracking, status transitions & POD upload
+  'documents',     // Document repository (typed uploads, list, delete)
 ];
 
 // ── Salary breakdown sub-schema ───────────────────────────────

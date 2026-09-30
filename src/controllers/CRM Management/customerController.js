@@ -52,6 +52,20 @@ async function listCustomers(req, res) {
     Customer.countDocuments(query),
     Customer.find(query).sort({ name: 1 }).skip(offset).limit(parseInt(limit)).lean(),
   ]);
+
+  // Outstanding per customer (mirrors getCustomer) so the list can render the
+  // same "Outstanding" figure the profile/wholesaler UI expects. One aggregation
+  // keeps it cheap even for the full 200-row directory.
+  if (customers.length) {
+    const ids = customers.map(c => c._id);
+    const agg = await Receivable.aggregate([
+      { $match: { company_id: req.user.company_id, customer_id: { $in: ids }, status: { $ne: 'Received' } } },
+      { $group: { _id: '$customer_id', outstanding: { $sum: '$outstanding' } } },
+    ]);
+    const outMap = new Map(agg.map(a => [String(a._id), a.outstanding]));
+    customers.forEach(c => { c.outstanding = outMap.get(String(c._id)) || 0; });
+  }
+
   sendSuccess(res, { customers, pagination: paginate(total, parseInt(page), parseInt(limit)) });
 }
 

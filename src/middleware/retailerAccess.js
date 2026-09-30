@@ -65,9 +65,34 @@ async function requireApprovedSeller(req, res, next) {
   next()
 }
 
+/**
+ * Gate a retailer route behind one of the RetailerApp module keys.
+ *
+ * The retailer owner always passes — only staff are restricted. A staff record
+ * with an empty `staff_app_access` array is treated as unrestricted (backward
+ * compatibility: the backend treats `[]` as "everything").
+ *
+ * Lives here rather than inside retailerRoutes.js so the ERP route surface
+ * (routes/Retailer Management/retailerErpRoutes.js) can share it.
+ */
+function requireRetailerModule(moduleKey) {
+  return (req, res, next) => {
+    if (req.user?.role !== 'RetailerStaff') return next()
+    const access = req.retailerStaff?.staff_app_access || []
+    if (access.length === 0) return next()
+    if (access.includes(moduleKey)) return next()
+    return res.status(403).json({
+      success: false,
+      message: `Access denied. You do not have access to the ${moduleKey} module.`,
+      module: moduleKey,
+    })
+  }
+}
+
 module.exports = {
   requireRetailerIdentity,
   requireApprovedRetailer,
   denyRetailerErpAccess,
   requireApprovedSeller,
+  requireRetailerModule,
 }

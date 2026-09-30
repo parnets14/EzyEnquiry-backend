@@ -495,7 +495,7 @@ async function logMovement(data) {
 async function listInventory(req, res) {
   const {
     warehouse_id, category_id, brand_id, search,
-    stock_status,   // available | low | out | reserved | blocked | all
+    stock_status,   // all | available | low | out | reserved | picking | packed | blocked
     page = 1, limit = 50,
   } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -527,6 +527,11 @@ async function listInventory(req, res) {
   }
   if (stock_status === 'out')      query.available_stock = 0;
   if (stock_status === 'reserved') query.reserved_stock  = { $gt: 0 };
+  // `picking` / `packed` mirror the wholesaler controller (wholesalerInventoryController.js
+  // cases 60-61). Without these a Picking/Packed filter falls through to "no filter"
+  // and silently returns EVERY row, which reads as a broken tab in the app.
+  if (stock_status === 'picking')  query.picking_stock   = { $gt: 0 };
+  if (stock_status === 'packed')   query.packed_stock    = { $gt: 0 };
   if (stock_status === 'blocked')  query.blocked_stock   = { $gt: 0 };
 
   const [total, docs] = await Promise.all([

@@ -44,7 +44,8 @@ async function createLead(req, res) {
 /** PUT /api/leads/:id */
 async function updateLead(req, res) {
   const { name, mobile, email, source, status, notes, assigned_to } = req.body;
-  const VALID = ['New', 'Contacted', 'Qualified', 'Converted', 'Lost'];
+  // Read the canonical list off the model so this can never drift from the enum again.
+  const VALID = Lead.LEAD_STATUSES || ['New', 'Follow-up', 'Interested', 'Not Interested', 'Converted'];
   const update = {};
   if (name        !== undefined) update.name        = name;
   if (mobile      !== undefined) update.mobile      = mobile;

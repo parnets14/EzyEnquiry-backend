@@ -13,6 +13,20 @@ const Product     = require('../../models/Product Management/Product')
 const Order       = require('../../models/Marketplace Management/Order')
 const Enquiry     = require('../../models/Marketplace Management/Enquiry')
 const User        = require('../../models/User Management/User')
+// ── ERP + CRM collections the retailer app writes ─────────────
+const Sale        = require('../../models/Finance Management/Sale')
+const Expense     = require('../../models/Finance Management/Expense')
+const Transaction = require('../../models/Finance Management/Transaction')
+const Invoice     = require('../../models/Finance Management/Invoice')
+const Quotation   = require('../../models/Finance Management/Quotation')
+const Receivable  = require('../../models/Finance Management/Receivable')
+const Payable     = require('../../models/Finance Management/Payable')
+const Purchase    = require('../../models/Purchase & Inventory Management/Purchase')
+const Inventory   = require('../../models/Purchase & Inventory Management/Inventory')
+const Dispatch    = require('../../models/Marketplace Management/Dispatch')
+const Customer    = require('../../models/CRM Management/Customer')
+const Lead        = require('../../models/CRM Management/Lead')
+const Followup    = require('../../models/CRM Management/Followup')
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers')
 
 // ── Guard ────────────────────────────────────────────────────
@@ -387,9 +401,260 @@ async function listProducts(req, res) {
   }
 }
 
+// ── Generic cross-company lister for retailer-owned collections ──────────────
+//
+// Every retailer ERP/CRM write goes through a shared controller that sets
+// `company_id: req.user.company_id` (verified 2026-09-29 — sale, expense,
+// purchase, transaction, invoice, quotation, dispatch, customer, lead, followup,
+// inventory all carry a required `company_id`). So `company_id: { $in:
+// retailerCompanyIds() }` is the reliable scope for everything the retailer app
+// produces, and no provenance stamp is needed.
+//
+// This factory exists because the alternative is eleven near-identical functions
+// that drift apart. Each collection differs only in: model, response key,
+// sort, the field the `status` filter maps to, the fields search matches, and
+// any populate.
+function companyScopedLister({
+  Model, key,
+  sort = { created_at: -1 },
+  statusField = 'status',
+  searchFields = [],
+  populate = [],
+  extraFilter = null,
+}) {
+  return async function listForAdmin(req, res) {
+    if (!ensureSuperAdmin(req, res)) return
+    try {
+      const { page = 1, limit = 200, search, status } = req.query
+      const skip = (parseInt(page) - 1) * parseInt(limit)
+
+      const companyIds = await retailerCompanyIds()
+      const query = { company_id: { $in: companyIds } }
+
+      // A few collections are keyed differently (Sale uses sale_status) or need a
+      // fixed extra condition — let the caller inject it.
+      if (extraFilter) Object.assign(query, extraFilter(req.query) || {})
+
+      if (status && status !== 'All' && statusField) query[statusField] = status
+      if (search && searchFields.length) {
+        query.$and = [{
+          $or: searchFields.map(f => ({ [f]: { $regex: search, $options: 'i' } })),
+        }]
+      }
+
+      let cursor = Model.find(query)
+      populate.forEach(p => { cursor = cursor.populate(p.path, p.select) })
+      const [total, rows] = await Promise.all([
+        Model.countDocuments(query),
+        cursor.sort(sort).skip(skip).limit(parseInt(limit)).lean(),
+      ])
+
+      sendSuccess(res, {
+        [key]: withCompany(rows),
+        pagination: paginate(total, parseInt(page), parseInt(limit)),
+      })
+    } catch (e) {
+      sendError(res, e.message, 500)
+    }
+  }
+}
+
+const COMPANY_POP = { path: 'company_id', select: 'name company_code' }
+
+// GET /api/retailer/admin/sales
+const listSales = companyScopedLister({
+  Model: Sale, key: 'sales', statusField: 'sale_status',
+  searchFields: ['sale_code', 'customer_name', 'product_name', 'invoice_number'],
+  populate: [COMPANY_POP],
+})
+
+// GET /api/retailer/admin/purchases
+const listPurchases = companyScopedLister({
+  Model: Purchase, key: 'purchases', statusField: 'status',
+  searchFields: ['purchase_code', 'supplier_name', 'product_name', 'invoice_number'],
+  populate: [COMPANY_POP],
+})
+
+// GET /api/retailer/admin/expenses
+const listExpenses = companyScopedLister({
+  Model: Expense, key: 'expenses', statusField: null,   // no status field on Expense
+  sort: { expense_date: -1, created_at: -1 },
+  searchFields: ['category', 'description', 'reference'],
+  populate: [COMPANY_POP],
+})
+
+// GET /api/retailer/admin/transactions — money actually received/paid
+const listTransactions = companyScopedLister({
+  Model: Transaction, key: 'transactions', statusField: 'type',  // Received | Paid
+  sort: { txn_date: -1, created_at: -1 },
+  searchFields: ['txn_code', 'party_name', 'reference', 'notes'],
+  populate: [COMPANY_POP],
+})
+
+// GET /api/retailer/admin/invoices
+const listInvoices = companyScopedLister({
+  Model: Invoice, key: 'invoices', statusField: 'status',
+  searchFields: ['invoice_no', 'customer_name', 'product_name'],
+  populate: [COMPANY_POP],
+})
+
+// GET /api/retailer/admin/quotations
+const listQuotations = companyScopedLister({
+  Model: Quotation, key: 'quotations', statusField: 'status',
+  searchFields: ['quotation_no', 'customer_name', 'product_name'],
+  populate: [COMPANY_POP],
+})
+
+// GET /api/retailer/admin/customers
+const listCustomers = companyScopedLister({
+  Model: Customer, key: 'customers', statusField: null,
+  sort: { created_at: -1 },
+  searchFields: ['name', 'mobile', 'email', 'gst_number', 'city'],
+  populate: [COMPANY_POP],
+})
+
+// GET /api/retailer/admin/leads
+const listLeads = companyScopedLister({
+  Model: Lead, key: 'leads', statusField: 'status',
+  searchFields: ['name', 'mobile', 'email', 'source'],
+  populate: [COMPANY_POP, { path: 'assigned_to', select: 'name' }],
+})
+
+// GET /api/retailer/admin/followups
+const listFollowups = companyScopedLister({
+  Model: Followup, key: 'followups', statusField: 'status',
+  sort: { followup_date: -1, created_at: -1 },
+  searchFields: ['notes'],
+  populate: [COMPANY_POP, { path: 'assigned_to', select: 'name' }],
+})
+
+// GET /api/retailer/admin/inventory — stock on hand per product
+// NOTE: Inventory stores only `product_id` / `warehouse_id` — there is NO
+// `product_name` or `warehouse_name` on this model (the report controller's
+// `r.product_name || '—'` fallback is for legacy rows and effectively always
+// falls through). So search is left off here and the CRM filters client-side on
+// the populated names, rather than regex-ing fields that don't exist.
+const listInventory = companyScopedLister({
+  Model: Inventory, key: 'inventory', statusField: null,
+  sort: { current_stock: 1 },
+  searchFields: [],
+  populate: [
+    COMPANY_POP,
+    { path: 'product_id',   select: 'name code unit category_name brand_name' },
+    { path: 'warehouse_id', select: 'name city' },
+  ],
+})
+
+// GET /api/retailer/admin/dispatches
+const listDispatches = companyScopedLister({
+  Model: Dispatch, key: 'dispatches', statusField: 'status',
+  sort: { dispatch_date: -1, created_at: -1 },
+  searchFields: ['dispatch_code', 'customer_name', 'vehicle_number', 'lr_number', 'invoice_number'],
+  populate: [COMPANY_POP],
+})
+
+/**
+ * GET /api/retailer/admin/activity-summary
+ *
+ * One aggregated payload for the admin Overview tab: how much of each thing the
+ * retailer app has produced across every retailer company. Mirrors the shape the
+ * wholesaler admin overview reads (flat counts + money), so the CRM page can use
+ * the same stat-card renderer.
+ */
+async function getActivitySummary(req, res) {
+  if (!ensureSuperAdmin(req, res)) return
+  try {
+    const companyIds = await retailerCompanyIds()
+    const scope = { company_id: { $in: companyIds } }
+    const orderScope = retailerAppDataFilter(companyIds)
+
+    const money = (Model, field = 'total_amount') =>
+      Model.aggregate([
+        { $match: scope },
+        { $group: { _id: null, total: { $sum: `$${field}` }, count: { $sum: 1 } } },
+      ])
+
+    const [
+      companies, users,
+      orders, enquiries,
+      salesAgg, purchaseAgg, expenseAgg,
+      invoices, quotations, transactions,
+      customers, leads, followups,
+      inventory, dispatches,
+      receivableAgg, payableAgg,
+    ] = await Promise.all([
+      Company.countDocuments(RETAILER_FILTER),
+      User.countDocuments({
+        $or: [{ company_id: { $in: companyIds } }, { role: { $in: ['Retailer', 'RetailerStaff'] } }],
+      }),
+      Order.countDocuments(orderScope),
+      Enquiry.countDocuments(orderScope),
+      money(Sale),
+      money(Purchase),
+      money(Expense, 'amount'),
+      Invoice.countDocuments(scope),
+      Quotation.countDocuments(scope),
+      Transaction.countDocuments(scope),
+      Customer.countDocuments(scope),
+      Lead.countDocuments(scope),
+      Followup.countDocuments(scope),
+      Inventory.countDocuments(scope),
+      Dispatch.countDocuments(scope),
+      // Outstanding = anything not fully settled (matches dashboardController).
+      Receivable.aggregate([
+        { $match: { ...scope, status: { $ne: 'Received' } } },
+        { $group: { _id: null, total: { $sum: '$outstanding' } } },
+      ]),
+      Payable.aggregate([
+        { $match: { ...scope, status: { $ne: 'Paid' } } },
+        { $group: { _id: null, total: { $sum: '$outstanding' } } },
+      ]),
+    ])
+
+    const [lowStock, outOfStock] = await Promise.all([
+      Inventory.countDocuments({ ...scope, $expr: { $and: [
+        { $gt: [{ $max: ['$available_stock', '$current_stock'] }, 0] },
+        { $gt: ['$low_stock_alert', 0] },
+        { $lte: [{ $max: ['$available_stock', '$current_stock'] }, '$low_stock_alert'] },
+      ] } }),
+      Inventory.countDocuments({ ...scope, $expr: { $lte: [{ $max: ['$available_stock', '$current_stock'] }, 0] } }),
+    ])
+
+    const num = agg => (agg && agg[0]) || { total: 0, count: 0 }
+
+    sendSuccess(res, {
+      companies,
+      users,
+      orders,
+      enquiries,
+      invoices,
+      quotations,
+      transactions,
+      customers,
+      leads,
+      followups,
+      inventory_items: inventory,
+      dispatches,
+      sales:        { total: num(salesAgg).total,    count: num(salesAgg).count },
+      purchases:    { total: num(purchaseAgg).total, count: num(purchaseAgg).count },
+      expenses:     { total: num(expenseAgg).total,  count: num(expenseAgg).count },
+      receivable_due: (receivableAgg[0] || {}).total || 0,
+      payable_due:    (payableAgg[0]    || {}).total || 0,
+      low_stock: lowStock,
+      out_of_stock: outOfStock,
+    })
+  } catch (e) {
+    sendError(res, e.message, 500)
+  }
+}
+
 module.exports = {
   listCompanies, getCompany,
   approveCompany, rejectCompany, suspendCompany, reinstateCompany,
   getCompanyKyc,
   listUsers, listOrders, listEnquiries, listProducts,
+  listSales, listPurchases, listExpenses, listTransactions,
+  listInvoices, listQuotations, listCustomers, listLeads, listFollowups,
+  listInventory, listDispatches,
+  getActivitySummary,
 }

@@ -165,6 +165,17 @@ async function getAvailableModules(_req, res) {
     { key: 'customers',     label: 'Customers',      description: 'Manage retailer customers' },
     { key: 'notifications', label: 'Notifications',  description: 'In-app and push notifications' },
     { key: 'reports',       label: 'Reports',        description: 'Sales and order reports' },
+    // ── ERP modules (added 2026-09-29) ──
+    { key: 'sales',         label: 'Sales',          description: 'Record sales and view sales reports' },
+    { key: 'purchases',     label: 'Purchase',       description: 'Purchase entries, bills and suppliers' },
+    { key: 'inventory',     label: 'Inventory',      description: 'Stock, warehouses and transfers' },
+    { key: 'expenses',      label: 'Expense',        description: 'Record and report business expenses' },
+    { key: 'payments',      label: 'Payments',       description: 'Receivables and payables' },
+    { key: 'accounts',      label: 'Accounts',       description: 'Ledgers, cash book and bank book' },
+    { key: 'profit_loss',   label: 'Profit & Loss',  description: 'Profit and loss dashboard' },
+    { key: 'leads',         label: 'Leads',          description: 'Track and convert sales leads' },
+    { key: 'dispatches',    label: 'Dispatch',       description: 'Track shipments, update status and upload POD' },
+    { key: 'documents',     label: 'Documents',      description: 'Store and share business documents' },
   ];
   sendSuccess(res, { modules });
 }

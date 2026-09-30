@@ -1,6 +1,6 @@
 const express = require('express')
 
-const { requireApprovedRetailer } = require('../../middleware/retailerAccess')
+const { requireApprovedRetailer, requireRetailerModule } = require('../../middleware/retailerAccess')
 const { retailerKycUpload } = require('../../middleware/retailerKycUpload')
 const { validateObjectIdParam } = require('../../middleware/validateObjectId')
 const { uploadImages } = require('../../middleware/upload')
@@ -162,20 +162,8 @@ router.param('offerId', validateObjectIdParam('offerId'))
 // ── Module guard for RetailerStaff ───────────────────────────
 // When a RetailerStaff token is used, check their staff_app_access list.
 // Empty list = all modules accessible. Non-empty = only listed modules.
-function requireRetailerModule(moduleKey) {
-  return (req, res, next) => {
-    // Retailer owner always passes — only restrict staff
-    if (req.user?.role !== 'RetailerStaff') return next()
-    const access = req.retailerStaff?.staff_app_access || []
-    if (access.length === 0) return next()  // no restriction
-    if (access.includes(moduleKey)) return next()
-    return res.status(403).json({
-      success: false,
-      message: `Access denied. You do not have access to the ${moduleKey} module.`,
-      module: moduleKey,
-    })
-  }
-}
+// requireRetailerModule now lives in middleware/retailerAccess.js (shared with
+// retailerErpRoutes.js) — imported above.
 
 // ── Staff Management (owner only) ────────────────────────────
 // RetailerStaff cannot access these — ownerOnly() guard inside controller.
@@ -274,5 +262,11 @@ router.post('/invoices/:id/pay/confirm', requireRetailerModule('invoices'), mark
 // Subscription (owner only in practice)
 router.get('/subscription/plans',   account.getPlans)
 router.get('/subscription/current', account.getCurrentSubscription)
+
+// ── ERP modules (sales, expenses, purchases, inventory, payments, …) ─────────
+// Mounted here rather than in server.js so it inherits this mount's
+// `authenticate, requireRetailerIdentity` and stays out of ERP_ROUTE_PREFIXES.
+// See retailerErpRoutes.js for why the ERP route files themselves can't be reused.
+router.use('/erp', require('./retailerErpRoutes'))
 
 module.exports = router
