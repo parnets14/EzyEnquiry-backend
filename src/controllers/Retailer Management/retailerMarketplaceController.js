@@ -9,6 +9,7 @@ const Company = require('../../models/Company Management/Company')
 const Enquiry = require('../../models/Marketplace Management/Enquiry')
 const EnquiryOffer = require('../../models/Marketplace Management/EnquiryOffer')
 const EnquiryMessage = require('../../models/Marketplace Management/EnquiryMessage')
+const EnquiryReplyHistory = require('../../models/Marketplace Management/EnquiryReplyHistory')
 const Order = require('../../models/Marketplace Management/Order')
 const { deductStockForOrder, restoreStockForOrder, releaseReserveForOrder } = require('../Purchase & Inventory Management/inventoryController')
 const Dispatch = require('../../models/Marketplace Management/Dispatch')
@@ -259,7 +260,7 @@ function productResponse(product, stock = undefined, viewer = null) {
   }
 }
 
-function enquiryResponse(enquiry, quotation = null) {
+function enquiryResponse(enquiry, quotation = null, viewerCompanyId = null) {
   const seller = enquiry.seller_company_id || enquiry.company_id || {}
   const product = enquiry.product_id || {}
   // The quotation the retailer submitted (rate/discount/GST/charges/total). For
@@ -294,6 +295,15 @@ function enquiryResponse(enquiry, quotation = null) {
     label: (q && q.created_by_name) || '',
   }
 
+  // Which side of this enquiry is the viewer on? A broadcast row carries the
+  // RECIPIENT as `company_id` and the SENDER as `buyer_company_id`, so the same
+  // document reads as "received" in one app and "raised" in another. The app
+  // uses this to choose between the availability+price reply form (received) and
+  // the buyer's offer/withdraw actions (raised).
+  const recipientId = enquiry.company_id?._id || enquiry.company_id || null
+  const isRecipient = !!(viewerCompanyId && recipientId
+    && String(recipientId) === String(viewerCompanyId))
+
   return {
     id: enquiry._id,
     enquiry_code: enquiry.enq_code,
@@ -304,6 +314,13 @@ function enquiryResponse(enquiry, quotation = null) {
     remarks: enquiry.remarks || '',
     seller_reply: enquiry.distributor_reply || '',
     accepted_offer_price: enquiry.offered_price,
+    // The recipient's availability + timeline, so the sender can read a reply
+    // without opening the offer thread.
+    available_quantity: enquiry.available_quantity ?? null,
+    delivery_timeline: enquiry.delivery_timeline || '',
+    is_recipient: isRecipient,
+    direction: isRecipient ? 'received' : 'raised',
+    broadcast_audience: enquiry.broadcast_audience || '',
     quotation: quotationBlock,
     customer: customerBlock,
     created_by: createdByBlock,
@@ -319,6 +336,18 @@ function enquiryResponse(enquiry, quotation = null) {
     seller: seller?._id
       ? { id: seller._id, name: seller.name || 'EzyEnquiry Official', city: seller.city || '', state: seller.state || '' }
       : { id: null, name: 'EzyEnquiry Official', city: '', state: '' },
+    // Who ASKED. On a broadcast row `seller_company_id` is the RECIPIENT — i.e.
+    // the retailer itself — so a received enquiry would otherwise show the
+    // retailer's own name as the party. The app uses this for received rows.
+    // Requires `buyer_company_id` to be populated (name/city/state).
+    sender: enquiry.buyer_company_id?._id
+      ? {
+          id: enquiry.buyer_company_id._id,
+          name: enquiry.buyer_company_id.name || '',
+          city: enquiry.buyer_company_id.city || '',
+          state: enquiry.buyer_company_id.state || '',
+        }
+      : null,
     order_id: enquiry.order_id || null,
     created_at: enquiry.created_at,
     updated_at: enquiry.updated_at,
@@ -410,10 +439,29 @@ function orderResponse(order) {
   }
 }
 
+// Enquiries the retailer RAISED (it is the buyer). Used for cancel, which must
+// never reach an enquiry that was merely SENT to the retailer.
 function buyerEnquiryQuery(req, id = null) {
   const query = { buyer_company_id: req.user.company_id, buyer_user_id: req.user._id }
   if (id) query._id = id
   return query
+}
+
+// Everything the retailer can SEE: the enquiries it raised, PLUS the ones sent
+// TO it (an Admin broadcast addressed to all retailers). Without the second
+// clause a broadcast is invisible to the very retailers it was addressed to —
+// `buyerEnquiryQuery` only matches rows where the retailer is the buyer.
+// `$and` keeps the ownership `$or` from being clobbered by a caller that also
+// sets `$or` (e.g. the search filter in listEnquiries).
+function myEnquiryQuery(req, id = null) {
+  const and = [{
+    $or: [
+      { buyer_company_id: req.user.company_id, buyer_user_id: req.user._id },
+      { company_id: req.user.company_id },
+    ],
+  }]
+  if (id) and.push({ _id: id })
+  return { $and: and }
 }
 
 function buyerOrderQuery(req, id = null) {
@@ -948,12 +996,191 @@ async function createAdminQuotationFromEnquiry(req, res, { product, qty, company
   }, 'Enquiry sent.', 201)
 }
 
+// ── Free-text enquiry (no catalogue product) — BROADCAST ─────────────────────
+// The retailer app's simple enquiry form lets the retailer DESCRIBE the product
+// in plain words (name / category / brand / size / finish / colour / grade /
+// details) instead of picking a catalogue item.
+//
+// There is no product, so there is no single owning seller to route to. The
+// retailer's instruction was explicit:
+//
+//   > "if i sent the enquery it should be go all wholealer , admin also create
+//   >  in admin also inside market maagement they will give reply"
+//
+// So this FANS OUT: one Enquiry document per recipient — every approved, active
+// wholesaler company plus the Admin company. The `Enquiry` schema carries a
+// single `company_id` / `seller_company_id`, so a broadcast is N rows, not one
+// shared row; every copy carries the same `enq_code` so they read as one
+// broadcast, and each copy keeps `buyer_company_id` / `buyer_user_id` so the
+// retailer sees every thread and every reply that comes back.
+//
+// Replies: each recipient answers on ITS OWN copy, so quotes arrive as separate
+// threads the retailer can compare. Recipients quote via
+// `POST /api/enquiries/:id/offers` (sellerCreateOffer) or the CRM's
+// Market Management reply (PATCH /api/enquiries/:id → updateEnquiry) — both were
+// relaxed the same day so that a product-less enquiry is answerable.
+async function createFreeTextEnquiry(req, res) {
+  const company = req.company
+  const body = req.body || {}
+
+  const productName = String(body.product_name || '').trim()
+  if (!productName) return sendError(res, 'Product name is required.', 400)
+
+  const qty = Number(body.qty)
+  if (!Number.isFinite(qty) || qty <= 0) return sendError(res, 'qty must be greater than zero.', 400)
+
+  // ── Recipients: every approved active wholesaler + ALL OTHER retailers + Admin ──
+  // biz_type is free text, so match on the STEM substring, case-insensitively.
+  // `/^wholesalers?$/i` used to silently drop a real "Wholesale" company (seen in
+  // production) — a wholesaler never received the retailer's broadcast.
+  const adminCompanyId = await resolveAdminCompanyId()
+  const wholesalers = await Company.find({
+    biz_type: /wholesale/i,
+    status: 'Approved',
+    is_active: { $ne: false },
+  }).select('_id owner_user_id name').lean()
+
+  // Every OTHER retailer company (the sender itself is excluded by the `seen`
+  // set seeded below). The enquiry must reach fellow retailers too, not just
+  // wholesalers and Admin.
+  const retailers = await Company.find({
+    biz_type: /retail/i,
+    status: 'Approved',
+    is_active: { $ne: false },
+  }).select('_id owner_user_id name').lean()
+
+  const recipients = []
+  // Seed with the sender so the retailer can never broadcast to itself.
+  const seen = new Set([String(req.user.company_id)])
+  if (adminCompanyId && !seen.has(String(adminCompanyId))) {
+    recipients.push(String(adminCompanyId)); seen.add(String(adminCompanyId))
+  }
+  for (const w of wholesalers) {
+    const id = String(w._id)
+    if (seen.has(id)) continue
+    seen.add(id)
+    recipients.push(id)
+  }
+  // Add fellow retailers (sender already in `seen`, so it's skipped).
+  for (const r of retailers) {
+    const id = String(r._id)
+    if (seen.has(id)) continue
+    seen.add(id)
+    recipients.push(id)
+  }
+  if (!recipients.length) return sendError(res, 'No wholesaler, retailer or Admin company is available to receive enquiries.', 409)
+
+  // The Enquiry model has no dedicated category/brand/size/… columns, so the
+  // retailer's free-text description is composed into `remarks` — which is what
+  // the CRM's Market Management row shows (`enqRemarks`) and what the retailer
+  // sees on its detail screen. Keep the labels so the block stays readable.
+  const remarks = [
+    body.category ? `Category: ${String(body.category).trim()}`     : '',
+    body.brand    ? `Brand: ${String(body.brand).trim()}`           : '',
+    body.size     ? `Size: ${String(body.size).trim()}`             : '',
+    body.finish   ? `Finish: ${String(body.finish).trim()}`         : '',
+    body.colour   ? `Colour: ${String(body.colour).trim()}`         : '',
+    body.material ? `Material: ${String(body.material).trim()}`     : '',
+    body.surface  ? `Surface: ${String(body.surface).trim()}`       : '',
+    body.grade    ? `Grade: ${String(body.grade).trim()}`           : '',
+    body.thickness ? `Thickness: ${String(body.thickness).trim()}` : '',
+    body.tile_type ? `Tile Type: ${String(body.tile_type).trim()}` : '',
+    body.details  ? `Details: ${String(body.details).trim()}`       : '',
+    body.remarks  ? `Notes: ${String(body.remarks).trim()}`         : '',
+  ].filter(Boolean).join('\n').slice(0, 2000)
+
+  // A DISTINCT PREFIX ('REQ-', not 'ENQ-') is deliberate. listEnquiries sweeps
+  // away every enquiry whose code starts with 'ENQ-' that has no matching
+  // Quotation — so an 'ENQ-' free-text enquiry would be created and then
+  // instantly hidden from the retailer's own list. 'REQ-' is never swept.
+  const enqCode = `REQ-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}-${crypto.randomInt(100, 999)}`
+  const unit = String(body.unit || 'Pcs').trim() || 'Pcs'
+
+  const base = {
+    enq_code: enqCode,
+    buyer_company_id: req.user.company_id,
+    buyer_user_id: req.user._id,
+    retailer_name: (company?.name || req.user.name || 'Retailer').trim(),
+    retailer_mobile: req.user.mobile || company?.mobile || '',
+    retailer_email: req.user.email || company?.email || '',
+    location: String(body.location || company?.city || '').trim(),
+    product_id: null,
+    product_code: '',
+    product_name: productName.slice(0, 200),
+    qty,
+    unit,
+    remarks,
+    // Stamped so the Admin's CRM can label this as a broadcast it RECEIVED
+    // ("BROADCAST · wholesalers") rather than mistaking it for a 1:1 enquiry.
+    // The value is the RETAILER's company, so the Admin's own
+    // `broadcast_owner_company_id` OR-clause never matches it.
+    broadcast_owner_company_id: req.user.company_id,
+    broadcast_audience: 'both',
+    created_by: req.user._id,
+    status: 'New',
+  }
+
+  // One row per recipient, inserted in a single round trip.
+  const docs = await Enquiry.insertMany(
+    recipients.map(companyId => ({ ...base, company_id: companyId, seller_company_id: companyId })),
+  )
+
+  // One in-app notification per recipient company (so it shows in the wholesaler
+  // app's and the CRM's notification lists) + one push to each owner user.
+  await Promise.all(docs.map(doc => Notification.create({
+    company_id: doc.company_id,
+    type: 'retailer_enquiry',
+    title: `New retailer enquiry ${enqCode}`,
+    message: `${company?.name || 'A retailer'} enquired for ${productName} × ${qty} ${unit}`,
+    reference_id: doc._id,
+  }).catch(() => {})))
+
+  const ownerIds = [
+    ...(await Company.find({ _id: { $in: recipients } }).select('owner_user_id').lean())
+      .map(c => c.owner_user_id)
+      .filter(Boolean),
+  ]
+  for (const ownerId of ownerIds) {
+    notifySeller(ownerId, {
+      title: `New Enquiry ${enqCode}`,
+      body: `${company?.name || 'A retailer'} enquired for ${productName} × ${qty} ${unit}`,
+      type: 'retailer_enquiry',
+      referenceId: docs[0]._id,
+    })
+  }
+
+  // ONE confirmation to the retailer — not one per recipient, or a broadcast to
+  // 20 wholesalers would spam the retailer's notification list 20 times.
+  const adminDoc = docs.find(d => String(d.company_id) === String(adminCompanyId)) || docs[0]
+  await Notification.create({
+    company_id: req.user.company_id, user_id: req.user._id,
+    type: 'enquiry_created', title: 'Enquiry submitted',
+    message: `${enqCode} was sent to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'} (wholesalers, retailers and the Admin team).`,
+    reference_id: adminDoc._id,
+  }).catch(() => {})
+
+  // Return the Admin copy (the primary responder) so the app opens a real thread.
+  const result = await Enquiry.findById(adminDoc._id)
+    .populate('seller_company_id', 'name city state')
+    .populate('product_id', 'code name image_urls')
+    .lean()
+  const payload = enquiryResponse(result)
+  payload.recipients = recipients.length
+  return ok(res, payload, 'Enquiry created.', 201)
+}
+
 async function createEnquiry(req, res) {
   console.log('[createEnquiry] incoming', {
     product_id: req.body.product_id,
     buyer_company_id: String(req.user?.company_id),
     buyer_user_id: String(req.user?._id),
   })
+
+  // No catalogue product → the retailer typed the product details instead.
+  if (!req.body.product_id) {
+    return createFreeTextEnquiry(req, res)
+  }
+
   const productId = req.body.product_id
   if (!productId) return sendError(res, 'product_id is required.', 400)
   if (!isObjectId(productId)) return sendError(res, `Invalid product id: ${productId}`, 400)
@@ -1050,7 +1277,9 @@ async function createEnquiry(req, res) {
 
 async function listEnquiries(req, res) {
   const { page, limit, skip } = parsePagination(req.query)
-  const query = buyerEnquiryQuery(req)
+  // myEnquiryQuery (not buyerEnquiryQuery): the retailer must also see enquiries
+  // sent TO it, e.g. an Admin broadcast addressed to all retailers.
+  const query = myEnquiryQuery(req)
   if (req.query.status && req.query.status !== 'All') {
     // Support comma-separated status values (e.g. "Viewed,Replied,Negotiation")
     const statuses = String(req.query.status).split(',').map(s => s.trim()).filter(Boolean)
@@ -1058,11 +1287,13 @@ async function listEnquiries(req, res) {
   }
   if (req.query.search) {
     const regex = new RegExp(escapeRegex(req.query.search), 'i')
-    query.$or = [{ enq_code: regex }, { product_name: regex }]
+    // Must NOT assign to `query.$or` — myEnquiryQuery already uses `$and`, and a
+    // top-level `$or` would be fine but a second one would clobber the first.
+    query.$and = [...(query.$and || []), { $or: [{ enq_code: regex }, { product_name: regex }] }]
   }
   const [total, enquiries] = await Promise.all([
     Enquiry.countDocuments(query),
-    Enquiry.find(query).populate('seller_company_id', 'name city state').populate('product_id', 'code name image_urls').sort({ created_at: -1 }).skip(skip).limit(limit).lean(),
+    Enquiry.find(query).populate('seller_company_id', 'name city state').populate('buyer_company_id', 'name city state').populate('product_id', 'code name image_urls').sort({ created_at: -1 }).skip(skip).limit(limit).lean(),
   ])
 
   // Hide admin-product enquiries whose linked quotation was deleted, so a
@@ -1084,16 +1315,178 @@ async function listEnquiries(req, res) {
   }
   const visible = enquiries.filter(e => !(e.enq_code && deletedCodes.has(e.enq_code)))
 
-  return ok(res, { enquiries: visible.map(e => enquiryResponse(e)) }, 'Enquiries retrieved.', 200, paginate(total, page, limit))
+  return ok(res, {
+    enquiries: visible.map(e => enquiryResponse(e, null, req.user.company_id)),
+  }, 'Enquiries retrieved.', 200, paginate(total, page, limit))
 }
 
 async function getEnquiry(req, res) {
   if (!isObjectId(req.params.id)) return sendError(res, 'Enquiry not found.', 404)
-  const enquiry = await Enquiry.findOne(buyerEnquiryQuery(req, req.params.id)).populate('seller_company_id', 'name city state').populate('product_id', 'code name image_urls').lean()
+  const enquiry = await Enquiry.findOne(myEnquiryQuery(req, req.params.id)).populate('seller_company_id', 'name city state').populate('buyer_company_id', 'name city state').populate('product_id', 'code name image_urls').lean()
   if (!enquiry) return sendError(res, 'Enquiry not found.', 404)
   // Attach the retailer's submitted quotation (rate/discount/GST/charges/total).
   const quotation = await Quotation.findOne({ enquiry_id: enquiry._id }).lean().catch(() => null)
-  return ok(res, enquiryResponse(enquiry, quotation), 'Enquiry retrieved.')
+  return ok(res, enquiryResponse(enquiry, quotation, req.user.company_id), 'Enquiry retrieved.')
+}
+
+// ── PATCH /api/retailer/enquiries/:id ────────────────────────────────────────
+// The retailer's write path, and the twin of `enquiryController.updateEnquiry`.
+// Until this existed there was NO `PATCH /retailer/enquiries/:id` route at all,
+// so `enquiryService.reply` / `enquiryService.update` in the app — both of which
+// hit exactly this path — were a silent 404. That meant the retailer could
+// neither record a 'Viewed' status nor answer an enquiry sent to it.
+//
+// Two cases, decided by which side of the enquiry the company is on:
+//   • RECEIVED (company_id === me) → the full availability + price reply.
+//   • RAISED   (buyer_company_id === me) → status-only moves the app needs
+//     ('Viewed' when the detail screen opens, 'Cancelled' to withdraw).
+// A retailer can never use this to rewrite an enquiry it raised.
+async function updateEnquiry(req, res) {
+  if (!isObjectId(req.params.id)) return sendError(res, 'Enquiry not found.', 404)
+
+  const body = req.body || {}
+
+  // Three shapes: the enquiry was sent TO this retailer (company_id), or this
+  // retailer SENT it (broadcast_owner_company_id / buyer_company_id).
+  const received = await Enquiry.findOne({ _id: req.params.id, company_id: req.user.company_id }).lean()
+  const enquiry = received
+    || await Enquiry.findOne({
+        _id: req.params.id,
+        $or: [
+          { buyer_company_id: req.user.company_id },
+          { broadcast_owner_company_id: req.user.company_id },
+        ],
+      }).lean()
+  if (!enquiry) return sendError(res, 'Enquiry not found.', 404)
+
+  const update = {}
+
+  if (received) {
+    // Recipient (seller) writing their availability + price reply
+    if (body.available_quantity !== undefined && body.available_quantity !== '' && body.available_quantity !== null) {
+      const n = Number(body.available_quantity)
+      if (!Number.isFinite(n) || n < 0) return sendError(res, 'available_quantity must be zero or more.', 400)
+      update.available_quantity = n
+    }
+    if (body.offered_price !== undefined && body.offered_price !== '' && body.offered_price !== null) {
+      const n = Number(body.offered_price)
+      if (!Number.isFinite(n) || n <= 0) return sendError(res, 'offered_price must be greater than zero.', 400)
+      update.offered_price = n
+    }
+    if (body.delivery_timeline !== undefined) update.delivery_timeline = String(body.delivery_timeline).trim().slice(0, 100)
+    if (body.distributor_reply !== undefined) update.distributor_reply = String(body.distributor_reply).trim().slice(0, 2000)
+
+    const allowed = ['Viewed', 'Replied', 'Cancelled']
+    if (body.status !== undefined && allowed.includes(body.status)) update.status = body.status
+    else if (Object.keys(update).length) update.status = 'Replied'   // a reply implies "Replied"
+  } else {
+    // Buyer / broadcast owner updating a seller's row (counter-offer / negotiation)
+    if (body.available_quantity !== undefined && body.available_quantity !== '' && body.available_quantity !== null) {
+      update.available_quantity = Number(body.available_quantity)
+    }
+    if (body.offered_price !== undefined && body.offered_price !== '' && body.offered_price !== null) {
+      update.offered_price = Number(body.offered_price)
+    }
+    if (body.delivery_timeline !== undefined) update.delivery_timeline = String(body.delivery_timeline || '').trim().slice(0, 100)
+    if (body.distributor_reply !== undefined) update.distributor_reply = String(body.distributor_reply || '').trim().slice(0, 2000)
+    if (body.negotiation_note !== undefined) update.negotiation_note = String(body.negotiation_note || '').trim()
+    // Status moves allowed for buyer on their own broadcast rows
+    const allowed = ['Viewed', 'Replied', 'Negotiation', 'Confirmed', 'Cancelled']
+    if (body.status !== undefined && allowed.includes(body.status)) update.status = body.status
+    else if (Object.keys(update).length && !update.status) update.status = 'Replied'
+  }
+
+  if (!Object.keys(update).length) return sendError(res, 'Nothing to update.', 400)
+
+  const updated = await Enquiry.findByIdAndUpdate(enquiry._id, update, { new: true })
+    .populate('seller_company_id', 'name city state')
+    .populate('product_id', 'code name image_urls')
+    .lean()
+
+  // Tell the SENDER a reply came in (an Admin broadcast's sender is the Admin).
+  if (received && update.status === 'Replied' && enquiry.buyer_company_id) {
+    const price = update.offered_price ?? enquiry.offered_price
+    const suffix = price ? ` — ₹${price} per ${enquiry.unit}` : ''
+    await Notification.create({
+      company_id: enquiry.buyer_company_id,
+      type: 'enquiry_reply',
+      title: `Reply for ${enquiry.enq_code}`,
+      message: `${req.company?.name || 'A retailer'} replied${suffix}.`,
+      reference_id: enquiry._id,
+    }).catch(() => {})
+    if (enquiry.buyer_user_id) {
+      notifyRetailer(enquiry.buyer_user_id, {
+        title: `Reply for ${enquiry.enq_code}`,
+        body: `${req.company?.name || 'A retailer'} replied${suffix}.`,
+        type: 'enquiry_reply',
+        referenceId: enquiry._id,
+      })
+    }
+  }
+
+  return ok(res, enquiryResponse(updated, null, req.user.company_id), 'Enquiry updated.')
+}
+
+// ── GET /api/retailer/enquiries/:id/replies ──────────────────────────────────
+// The retailer's twin of `enquiryController.enquiryReplies`. A broadcast is N
+// sibling rows sharing one `enq_code`, so the sender wants the roster — who
+// answered, what they quoted, and who is still silent — not N separate cards.
+//
+// NOTE this deliberately reads SIBLINGS the retailer does not own: the copies
+// sent to wholesalers and to the Admin have `company_id` = those companies. The
+// retailer is entitled to see them because it is the one who ASKED, which is why
+// the anchor is resolved through `myEnquiryQuery` and the siblings are then
+// fetched by `enq_code` alone.
+function shapeReply(row) {
+  const c = row.company_id && row.company_id._id ? row.company_id : null
+  return {
+    id: row._id,
+    company: c ? {
+      id: c._id,
+      name: c.name || '',
+      company_code: c.company_code || '',
+      city: c.city || '',
+      state: c.state || '',
+      mobile: c.mobile || '',
+    } : null,
+    status: row.status,
+    unit: row.unit || '',
+    qty: row.qty,
+    offered_price: row.offered_price ?? null,
+    available_quantity: row.available_quantity ?? null,
+    delivery_timeline: row.delivery_timeline || '',
+    message: row.distributor_reply || '',
+    responded_at: row.updated_at || null,
+  }
+}
+
+function hasReplied(row) {
+  return ['Replied', 'Negotiation', 'Confirmed'].includes(row.status)
+    || !!String(row.distributor_reply || '').trim()
+    || row.offered_price != null
+    || row.available_quantity != null
+}
+
+async function enquiryReplies(req, res) {
+  if (!isObjectId(req.params.id)) return sendError(res, 'Enquiry not found.', 404)
+  const anchor = await Enquiry.findOne(myEnquiryQuery(req, req.params.id)).select('enq_code').lean()
+  if (!anchor) return sendError(res, 'Enquiry not found.', 404)
+
+  const rows = await Enquiry.find({ enq_code: anchor.enq_code })
+    .populate('company_id', 'name company_code city state mobile')
+    .sort({ updated_at: -1 })
+    .lean()
+
+  const replied  = rows.filter(hasReplied).map(shapeReply)
+  const awaiting = rows.filter(r => !hasReplied(r)).map(shapeReply)
+
+  return ok(res, {
+    enquiry_code: anchor.enq_code,
+    total: rows.length,
+    counts: { total: rows.length, replied: replied.length, awaiting: awaiting.length },
+    replied,
+    awaiting,
+  }, 'Replies retrieved.')
 }
 
 async function cancelEnquiry(req, res) {
@@ -1120,11 +1513,32 @@ async function cancelEnquiry(req, res) {
 }
 
 async function listMessages(req, res) {
-  const enquiry = await Enquiry.findOne(buyerEnquiryQuery(req, req.params.id)).select('_id').lean()
+  // Accept any row this user's company owns — as buyer, seller, or broadcast sender.
+  const enquiry = await Enquiry.findOne({
+    _id: req.params.id,
+    $or: [
+      { buyer_company_id: req.user.company_id },
+      { broadcast_owner_company_id: req.user.company_id },
+      { company_id: req.user.company_id },
+    ],
+  }).select('_id enq_code').lean()
   if (!enquiry) return sendError(res, 'Enquiry not found.', 404)
-  const messages = await EnquiryMessage.find({ enquiry_id: enquiry._id }).populate('sender_user_id', 'name role').sort({ created_at: 1 }).lean()
+
+  // For a broadcast owner, gather all sibling row ids so we get the full thread
+  // across all recipients rather than just one seller's slice.
+  let rowIds = [enquiry._id]
+  if (enquiry.enq_code) {
+    const siblings = await Enquiry.find({ enq_code: enquiry.enq_code }).select('_id').lean()
+    rowIds = siblings.map(s => s._id)
+  }
+
+  const messages = await EnquiryMessage.find({ enquiry_id: { $in: rowIds } })
+    .populate('sender_user_id', 'name role')
+    .sort({ created_at: 1 })
+    .lean()
   return ok(res, { messages: messages.map(item => ({
     id: item._id, message: item.message, sender_side: item.sender_side,
+    seller_company_id: item.seller_company_id,
     sender: item.sender_user_id ? { id: item.sender_user_id._id, name: item.sender_user_id.name } : null,
     client_message_id: item.client_message_id || '', created_at: item.created_at,
   })) }, 'Messages retrieved.')
@@ -1134,7 +1548,17 @@ async function createBuyerMessage(req, res) {
   const message = String(req.body.message || '').trim()
   const clientMessageId = String(req.body.client_message_id || '').trim()
   if (!message || message.length > 2000) return sendError(res, 'message is required and must not exceed 2000 characters.', 400)
-  const enquiry = await Enquiry.findOne(buyerEnquiryQuery(req, req.params.id)).lean()
+
+  // Find the enquiry — buyer_company_id match is enough; don't require buyer_user_id
+  // because any staff member from the buyer's company should be able to message.
+  const enquiry = await Enquiry.findOne({
+    _id: req.params.id,
+    $or: [
+      { buyer_company_id: req.user.company_id },
+      { broadcast_owner_company_id: req.user.company_id },
+      { company_id: req.user.company_id },
+    ],
+  }).lean()
   if (!enquiry) return sendError(res, 'Enquiry not found.', 404)
   if (enquiry.status === 'Cancelled') return sendError(res, 'Messages cannot be sent on a cancelled enquiry.', 409)
 
@@ -1227,14 +1651,19 @@ async function sellerCreateOffer(req, res) {
   if (!enquiry || !enquiry.buyer_company_id || !enquiry.buyer_user_id) return sendError(res, 'Retailer marketplace enquiry not found.', 404)
   if (['Cancelled', 'Confirmed'].includes(enquiry.status)) return sendError(res, 'This enquiry is no longer open for offers.', 409)
 
-  const product = await Product.findOne({ _id: enquiry.product_id, company_id: req.user.company_id }).select('gst_percent').lean()
-  if (!product) return sendError(res, 'Product not found for this seller.', 404)
+  // A FREE-TEXT enquiry carries no product_id, so there is no catalogue row to
+  // read the GST rate from — the seller supplies it (or it defaults to 0). When
+  // a product IS attached, keep the original lookup + ownership check.
+  const product = enquiry.product_id
+    ? await Product.findOne({ _id: enquiry.product_id, company_id: req.user.company_id }).select('gst_percent').lean()
+    : null
+  if (enquiry.product_id && !product) return sendError(res, 'Product not found for this seller.', 404)
   const unitPrice = nonNegative(req.body.unit_price, 'unit_price')
   if (unitPrice <= 0) return sendError(res, 'unit_price must be greater than zero.', 400)
   const transport = nonNegative(req.body.transport_charge, 'transport_charge')
   const packing = nonNegative(req.body.packing_charge, 'packing_charge')
   const other = nonNegative(req.body.other_charge, 'other_charge')
-  const gstPercent = req.body.gst_percent === undefined ? nonNegative(product.gst_percent, 'gst_percent') : nonNegative(req.body.gst_percent, 'gst_percent')
+  const gstPercent = req.body.gst_percent === undefined ? nonNegative(product?.gst_percent, 'gst_percent') : nonNegative(req.body.gst_percent, 'gst_percent')
   if (gstPercent > 100) return sendError(res, 'gst_percent must not exceed 100.', 400)
   const amount = money(enquiry.qty * unitPrice)
   const gstAmount = money(amount * gstPercent / 100)
@@ -1243,7 +1672,7 @@ async function sellerCreateOffer(req, res) {
   await EnquiryOffer.updateMany({ enquiry_id: enquiry._id, seller_company_id: req.user.company_id, status: 'Pending' }, { status: 'Withdrawn' })
   const offer = await EnquiryOffer.create({
     enquiry_id: enquiry._id, buyer_company_id: enquiry.buyer_company_id, buyer_user_id: enquiry.buyer_user_id,
-    seller_company_id: req.user.company_id, seller_user_id: req.user._id, product_id: enquiry.product_id,
+    seller_company_id: req.user.company_id, seller_user_id: req.user._id, product_id: enquiry.product_id || null,
     qty: enquiry.qty, unit: enquiry.unit, unit_price: unitPrice, gst_percent: gstPercent,
     amount, gst_amount: gstAmount, transport_charge: transport, packing_charge: packing,
     other_charge: other, total_amount: total,
@@ -1272,7 +1701,14 @@ async function sellerListMessages(req, res) {
   const enquiry = await Enquiry.findOne({ _id: req.params.id, seller_company_id: req.user.company_id, company_id: req.user.company_id }).lean()
   if (!enquiry) return sendError(res, 'Seller enquiry not found.', 404)
   const messages = await EnquiryMessage.find({ enquiry_id: enquiry._id }).populate('sender_user_id', 'name role').sort({ created_at: 1 }).lean()
-  return ok(res, { messages }, 'Messages retrieved.')
+  // Mirror the buyer-side shape so a single renderer can render bubbles for
+  // either side without per-call branching on which field is present.
+  return ok(res, { messages: messages.map(item => ({
+    id: item._id, message: item.message, sender_side: item.sender_side,
+    seller_company_id: item.seller_company_id,
+    sender: item.sender_user_id ? { id: item.sender_user_id._id, name: item.sender_user_id.name } : null,
+    client_message_id: item.client_message_id || '', created_at: item.created_at,
+  })) }, 'Messages retrieved.')
 }
 
 async function sellerCreateMessage(req, res) {
@@ -1775,6 +2211,99 @@ async function deleteNotification(req, res) {
   return ok(res, { id: deleted._id }, 'Notification deleted.')
 }
 
+// ── POST /retailer/enquiries/:id/reply-history ───────────────────────────────
+async function createReplyHistory(req, res) {
+  const { offered_price, available_quantity, delivery_timeline, remarks, unit } = req.body
+  if (offered_price == null) return sendError(res, 'offered_price is required.', 400)
+
+  const enquiry = await Enquiry.findOne({
+    _id: req.params.id,
+    $or: [
+      { company_id: req.user.company_id },
+      { buyer_company_id: req.user.company_id },
+      { broadcast_owner_company_id: req.user.company_id },
+    ],
+  }).lean()
+  if (!enquiry) return sendError(res, 'Enquiry not found.', 404)
+
+  const me = String(req.user.company_id)
+  let senderSide = 'seller'
+  if (String(enquiry.broadcast_owner_company_id) === me || String(enquiry.buyer_company_id) === me) {
+    senderSide = 'buyer'
+  } else if (String(enquiry.company_id) === me) {
+    senderSide = 'seller'
+  }
+
+  const history = await EnquiryReplyHistory.create({
+    enquiry_id:         enquiry._id,
+    enq_code:           enquiry.enq_code || '',
+    sender_company_id:  req.user.company_id,
+    sender_user_id:     req.user._id,
+    sender_name:        req.user.name || req.company?.name || '',
+    sender_side:        senderSide,
+    offered_price:      Number(offered_price),
+    available_quantity: available_quantity != null ? Number(available_quantity) : null,
+    unit:               unit || enquiry.unit || '',
+    delivery_timeline:  String(delivery_timeline || '').trim(),
+    remarks:            String(remarks || '').trim(),
+  })
+
+  // Update the enquiry row with latest values
+  await Enquiry.findByIdAndUpdate(enquiry._id, {
+    offered_price:      Number(offered_price),
+    available_quantity: available_quantity != null ? Number(available_quantity) : undefined,
+    delivery_timeline:  String(delivery_timeline || '').trim(),
+    distributor_reply:  String(remarks || '').trim(),
+    status:             'Replied',
+  })
+
+  return ok(res, {
+    id:                 history._id,
+    offered_price:      history.offered_price,
+    available_quantity: history.available_quantity,
+    unit:               history.unit,
+    delivery_timeline:  history.delivery_timeline,
+    remarks:            history.remarks,
+    sender_side:        history.sender_side,
+    sender_name:        history.sender_name,
+    created_at:         history.created_at,
+  }, 'Reply saved.', 201)
+}
+
+// ── GET /retailer/enquiries/:id/reply-history ────────────────────────────────
+async function listReplyHistory(req, res) {
+  const enquiry = await Enquiry.findOne({
+    _id: req.params.id,
+    $or: [
+      { company_id: req.user.company_id },
+      { buyer_company_id: req.user.company_id },
+      { broadcast_owner_company_id: req.user.company_id },
+    ],
+  }).select('_id enq_code').lean()
+  if (!enquiry) return sendError(res, 'Enquiry not found.', 404)
+
+  const filter = enquiry.enq_code
+    ? { enq_code: enquiry.enq_code }
+    : { enquiry_id: enquiry._id }
+
+  const history = await EnquiryReplyHistory.find(filter).sort({ created_at: 1 }).lean()
+
+  return ok(res, {
+    total: history.length,
+    replies: history.map(h => ({
+      id:                 h._id,
+      offered_price:      h.offered_price,
+      available_quantity: h.available_quantity,
+      unit:               h.unit,
+      delivery_timeline:  h.delivery_timeline,
+      remarks:            h.remarks,
+      sender_side:        h.sender_side,
+      sender_name:        h.sender_name,
+      created_at:         h.created_at,
+    })),
+  }, 'Reply history retrieved.')
+}
+
 module.exports = {
   ANDROID_STATUS,
   dashboard,
@@ -1788,12 +2317,16 @@ module.exports = {
   createEnquiry,
   listEnquiries,
   getEnquiry,
+  updateEnquiry,
+  enquiryReplies,
   cancelEnquiry,
   listMessages,
   createBuyerMessage,
   listOffers,
   respondToOffer,
   sellerListOffers,
+  createReplyHistory,
+  listReplyHistory,
   sellerCreateOffer,
   sellerListMessages,
   sellerCreateMessage,

@@ -7,7 +7,11 @@ const enquiryOfferSchema = new mongoose.Schema(
     buyer_user_id:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     seller_company_id:{ type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     seller_user_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    product_id:       { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+    // Nullable: an offer is normally raised against a catalogue product, but a
+    // FREE-TEXT enquiry (the retailer typed the product details instead of
+    // picking one) has no product_id, and its recipients must still be able to
+    // quote. `required: true` here made those enquiries unanswerable.
+    product_id:       { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
     qty:              { type: Number, required: true, min: 0.001 },
     unit:             { type: String, default: 'Pcs' },
     unit_price:       { type: Number, required: true, min: 0 },

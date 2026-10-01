@@ -232,6 +232,15 @@ router.delete('/customers/:id', requireRetailerModule('customers'), marketplace.
 router.get   ('/enquiries',                        requireRetailerModule('enquiries'), marketplace.listEnquiries)
 router.post  ('/enquiries',                        requireRetailerModule('enquiries'), marketplace.createEnquiry)
 router.get   ('/enquiries/:id',                    requireRetailerModule('enquiries'), marketplace.getEnquiry)
+// The retailer's write path: 'Viewed' on open, and the availability + price
+// reply to an enquiry sent TO the retailer. The app's enquiryService.reply /
+// .update both hit this URL and there was no route here at all before, so both
+// were a silent 404.
+router.patch ('/enquiries/:id',                    requireRetailerModule('enquiries'), marketplace.updateEnquiry)
+// Who answered a broadcast (and who has not) — one call returns the whole roster.
+router.get   ('/enquiries/:id/replies',            requireRetailerModule('enquiries'), marketplace.enquiryReplies)
+router.get   ('/enquiries/:id/reply-history',      requireRetailerModule('enquiries'), marketplace.listReplyHistory)
+router.post  ('/enquiries/:id/reply-history',      requireRetailerModule('enquiries'), marketplace.createReplyHistory)
 router.patch ('/enquiries/:id/cancel',             requireRetailerModule('enquiries'), marketplace.cancelEnquiry)
 router.get   ('/enquiries/:id/messages',           requireRetailerModule('enquiries'), marketplace.listMessages)
 router.post  ('/enquiries/:id/messages',           requireRetailerModule('enquiries'), marketplace.createBuyerMessage)

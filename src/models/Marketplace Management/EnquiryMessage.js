@@ -7,7 +7,7 @@ const enquiryMessageSchema = new mongoose.Schema(
     buyer_user_id:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     seller_company_id:{ type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     sender_user_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    sender_side:      { type: String, enum: ['buyer', 'seller'], required: true },
+    sender_side:      { type: String, enum: ['buyer', 'seller', 'admin'], required: true },
     message:          { type: String, required: true, trim: true, maxlength: 2000 },
     client_message_id:{ type: String, default: '', trim: true, maxlength: 100 },
   },

@@ -15,10 +15,21 @@ async function seedSuperAdmin() {
     const existing = await User.findOne({ email }).lean()
 
     if (existing) {
-      if (!existing.company_id) {
-        const company = await ensureDefaultCompany(email)
-        await User.findByIdAndUpdate(existing._id, { company_id: company._id })
-        console.log('[Seed] ✓ Super Admin linked to company —', company.name)
+      // ── The Super Admin must NEVER share a company with a real business ──
+      // Historically the first company it found was reused as "the admin
+      // company", so the admin ended up inside a customer's company (seen in
+      // production: Super Admin lived in a Wholesaler company). That breaks
+      // broadcasts: `broadcastEnquiry` excludes the SENDER's own company, so
+      // whenever the Admin sent, that customer was dropped as "itself" and
+      // never received the enquiry — and the Admin had nowhere to receive into.
+      //
+      // So: if the admin's company looks like a real business (it exists, was
+      // NOT created by this seeder, and other users belong to it), move the
+      // admin onto a dedicated company instead of silently accepting it.
+      const dedicated = await ensureDedicatedAdminCompany(email, existing)
+      if (dedicated && String(existing.company_id || '') !== String(dedicated._id)) {
+        await User.findByIdAndUpdate(existing._id, { company_id: dedicated._id })
+        console.log('[Seed] ✓ Super Admin moved to dedicated company —', dedicated.name)
       } else {
         console.log('[Seed] Super Admin already exists — skipping.')
       }
@@ -42,6 +53,45 @@ async function seedSuperAdmin() {
   } catch (err) {
     console.error('[Seed] ✗ Failed to seed Super Admin:', err.message)
   }
+}
+
+// ── Dedicated admin company ───────────────────────────────────────────────────
+// Returns the company the Super Admin SHOULD own. Creates one if the admin has
+// none, or if its current company is a real business (i.e. more than one user
+// belongs to it, or it was not created by this helper).
+async function ensureDedicatedAdminCompany(email, adminUser) {
+  const ADMIN_NAME = process.env.SUPER_ADMIN_COMPANY_NAME || 'EzyEnquiry Admin'
+
+  // Already on a dedicated company? (by name, and it is not shared)
+  const byName = await Company.findOne({ name: ADMIN_NAME }).lean()
+  if (byName) return byName
+
+  if (adminUser.company_id) {
+    const current = await Company.findById(adminUser.company_id).lean()
+    // Safe to keep when the admin is the ONLY user in that company — it was
+    // probably created for the admin in the first place.
+    if (current) {
+      const userCount = await User.countDocuments({ company_id: current._id })
+      if (userCount <= 1) return current
+    }
+  }
+
+  // Create a dedicated one.
+  let code; let n = 0
+  do { n++; code = `ADMIN-${String(n).padStart(3, '0')}` } while (await Company.exists({ company_code: code }))
+
+  return Company.create({
+    company_code:      code,
+    name:              ADMIN_NAME,
+    owner_name:        adminUser.name || 'Super Admin',
+    biz_type:          'Wholesaler',      // kept a broadcast recipient
+    mobile:            adminUser.mobile || '9000000000',
+    email,
+    subscription_plan: 'Platinum',
+    status:            'Approved',
+    is_active:         true,
+    approved_at:       new Date(),
+  })
 }
 
 // ── Heal Orphan Users ─────────────────────────────────────────────────────────
