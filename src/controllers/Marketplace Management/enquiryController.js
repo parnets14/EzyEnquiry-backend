@@ -193,18 +193,37 @@ async function listEnquiries(req, res) {
   // The sender must also see the broadcasts it raised. A broadcast row's
   // `company_id` is the RECIPIENT, so the plain scope would hide every row the
   // sender just created — and with it every reply.
-  const query = {
+  //
+  // A RECEIVED enquiry (someone else sent it TO this company) belongs to the
+  // whole company — ANY logged-in user of the recipient company must see it,
+  // whatever their role. "Received" means the row carries a sender:
+  // `buyer_company_id` (a 1:1 enquiry raised against us) or
+  // `broadcast_owner_company_id` pointing at ANOTHER company (a broadcast
+  // addressed to us). So the per-user `created_by` narrowing below must only
+  // ever apply to rows this company RAISED itself — never to received mail.
+  const me = String(req.user.company_id);
+  const receivedScope = {
+    company_id: req.user.company_id,
     $or: [
-      { company_id: req.user.company_id },
-      { broadcast_owner_company_id: req.user.company_id },
+      { buyer_company_id: { $ne: null, $exists: true } },
+      { broadcast_owner_company_id: { $ne: null, $exists: true } },
     ],
   };
-  if (status && status !== 'All') query.status = status;
-  // A user who cannot see the whole company still sees what they created; the
-  // $and keeps that from clobbering the ownership $or above.
+  // Rows this company RAISED: a broadcast it owns, or a legacy own-record
+  // (its own company_id with no buyer set).
+  const raisedScope = {
+    $or: [
+      { broadcast_owner_company_id: req.user.company_id },
+      { company_id: req.user.company_id, buyer_company_id: null },
+    ],
+  };
+  // A user who cannot see the whole company still sees what THEY raised; this
+  // never hides a received enquiry (those are company-wide).
   if (!SEE_ALL_ROLES.includes(req.user?.role)) {
-    query.$and = [{ created_by: req.user._id }];
+    raisedScope.$or = raisedScope.$or.map(clause => ({ ...clause, created_by: req.user._id }));
   }
+  const query = { $or: [receivedScope, raisedScope] };
+  if (status && status !== 'All') query.status = status;
   if (search) {
     query.$and = [
       ...(query.$and || []),
@@ -238,8 +257,7 @@ async function listEnquiries(req, res) {
   //   company_id === me, no buyer_company_id       → legacy own record → raised
   //   company_id === me, buyer_company_id set      → addressed TO this company
   // The UI splits its Sent / Received tabs on this rather than re-deriving it
-  // (and getting it backwards) client-side.
-  const me = String(req.user.company_id);
+  // (and getting it backwards) client-side. (`me` is declared above.)
   const withDirection = enquiries.map(e => ({
     ...e,
     direction: (
