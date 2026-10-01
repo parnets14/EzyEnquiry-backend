@@ -6,8 +6,20 @@ const Brand         = require('./Product Management/Brand')
 const Product       = require('./Product Management/Product')
 const Supplier      = require('./Purchase & Inventory Management/Supplier')
 const Purchase      = require('./Purchase & Inventory Management/Purchase')
+const PurchaseRequisition = require('./Purchase & Inventory Management/PurchaseRequisition')
+const PurchaseOrder = require('./Purchase & Inventory Management/PurchaseOrder')
+const GRN = require('./Purchase & Inventory Management/GRN')
+const QualityInspection = require('./Purchase & Inventory Management/QualityInspection')
+const PurchaseReturn = require('./Purchase & Inventory Management/PurchaseReturn')
 const Warehouse     = require('./Purchase & Inventory Management/Warehouse')
 const Inventory     = require('./Purchase & Inventory Management/Inventory')
+const OpeningStock = require('./Purchase & Inventory Management/OpeningStock')
+const UnitConversion = require('./Purchase & Inventory Management/UnitConversion')
+const RackBin = require('./Purchase & Inventory Management/RackBin')
+const Batch = require('./Purchase & Inventory Management/Batch')
+const DamageRecord = require('./Purchase & Inventory Management/DamageRecord')
+const StockAdjustment = require('./Purchase & Inventory Management/StockAdjustment')
+const Shade = require('./Purchase & Inventory Management/Shade')
 const StockTransfer = require('./Purchase & Inventory Management/StockTransfer')
 const StockMovement = require('./Purchase & Inventory Management/StockMovement')
 const Enquiry       = require('./Marketplace Management/Enquiry')
@@ -43,8 +55,20 @@ module.exports = {
   Product,
   Supplier,
   Purchase,
+  PurchaseRequisition,
+  PurchaseOrder,
+  GRN,
+  QualityInspection,
+  PurchaseReturn,
   Warehouse,
   Inventory,
+  OpeningStock,
+  UnitConversion,
+  RackBin,
+  Batch,
+  DamageRecord,
+  StockAdjustment,
+  Shade,
   StockTransfer,
   StockMovement,
   Enquiry,

@@ -6,6 +6,20 @@ const { notifyRetailer } = require('../../utils/pushHelper');
 
 const OWNER_ROLES = ['Company Owner', 'Retailer'];
 
+/**
+ * Build a scope filter that matches a notification the caller is allowed to
+ * act on. Super Admin can touch any notification; everyone else is limited to
+ * notifications for their company OR addressed directly to them.
+ */
+function ownScope(req) {
+  if (req.user.role === 'Super Admin') return {};
+  const or = [];
+  if (req.user.company_id) or.push({ company_id: req.user.company_id });
+  if (req.user._id) or.push({ user_id: req.user._id });
+  // Fall back to an impossible match if we somehow have no identity.
+  return or.length ? { $or: or } : { _id: null };
+}
+
 /** GET /api/notifications */
 async function listNotifications(req, res) {
   const { is_read, page = 1, limit = 30 } = req.query;
@@ -24,7 +38,7 @@ async function listNotifications(req, res) {
 /** PATCH /api/notifications/:id/read */
 async function markNotificationRead(req, res) {
   const notif = await Notification.findOneAndUpdate(
-    { _id: req.params.id, company_id: req.user.company_id },
+    { _id: req.params.id, ...ownScope(req) },
     { is_read: true },
     { new: true }
   ).lean();
@@ -43,9 +57,15 @@ async function markAllNotificationsRead(req, res) {
 
 /** DELETE /api/notifications/:id */
 async function deleteNotification(req, res) {
-  const result = await Notification.deleteOne({ _id: req.params.id, company_id: req.user.company_id });
+  const result = await Notification.deleteOne({ _id: req.params.id, ...ownScope(req) });
   if (result.deletedCount === 0) return sendError(res, 'Notification not found.', 404);
   sendSuccess(res, null, 'Notification deleted.');
+}
+
+/** DELETE /api/notifications  — clear all notifications in the caller's scope */
+async function deleteAllNotifications(req, res) {
+  const result = await Notification.deleteMany({ ...ownScope(req) });
+  sendSuccess(res, { deleted: result.deletedCount }, 'All notifications cleared.');
 }
 
 /**
@@ -110,6 +130,7 @@ async function broadcastNotification(req, res) {
 }
 
 module.exports = {
-  listNotifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
+  listNotifications, markNotificationRead, markAllNotificationsRead,
+  deleteNotification, deleteAllNotifications,
   createNotification, broadcastNotification,
 };
