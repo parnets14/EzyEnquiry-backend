@@ -7,6 +7,7 @@ router.post  ('/',              ctrl.createNotification);       // Super Admin â
 router.post  ('/broadcast',     ctrl.broadcastNotification);    // Super Admin â†’ send to all companies
 router.patch ('/mark-all-read', ctrl.markAllNotificationsRead);
 router.patch ('/:id/read',      ctrl.markNotificationRead);
+router.delete('/',              ctrl.deleteAllNotifications);   // clear all
 router.delete('/:id',           ctrl.deleteNotification);
 
 module.exports = router;

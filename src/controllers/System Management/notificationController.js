@@ -62,6 +62,12 @@ async function deleteNotification(req, res) {
   sendSuccess(res, null, 'Notification deleted.');
 }
 
+/** DELETE /api/notifications  — clear all notifications in the caller's scope */
+async function deleteAllNotifications(req, res) {
+  const result = await Notification.deleteMany({ ...ownScope(req) });
+  sendSuccess(res, { deleted: result.deletedCount }, 'All notifications cleared.');
+}
+
 /**
  * Deliver one notification to a company: create the DB record for the owner
  * and fire a best-effort push. Returns true if delivered.
@@ -124,6 +130,7 @@ async function broadcastNotification(req, res) {
 }
 
 module.exports = {
-  listNotifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
+  listNotifications, markNotificationRead, markAllNotificationsRead,
+  deleteNotification, deleteAllNotifications,
   createNotification, broadcastNotification,
 };
