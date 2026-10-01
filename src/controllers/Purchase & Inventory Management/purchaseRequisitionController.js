@@ -8,6 +8,37 @@ async function nextPRNo(companyId) {
   return `PR-${String(num + 1).padStart(4, '0')}`;
 }
 
+/**
+ * Normalise an incoming requisition payload so Mongoose never fails to cast.
+ * The frontend sends empty strings ('') for unselected ObjectId / Date fields,
+ * which Mongoose cannot cast to ObjectId/Date and would reject with a 400.
+ * Convert those blanks to null and drop empty line items.
+ */
+function sanitizeBody(body = {}) {
+  const toNull = (v) => (v === '' || v === undefined ? null : v);
+  const items = Array.isArray(body.items)
+    ? body.items
+        // keep only rows that actually reference a product
+        .filter((i) => i && (i.product_id || i.product_name))
+        .map((i) => ({
+          product_id:   toNull(i.product_id),
+          product_name: i.product_name || '',
+          quantity:     Number(i.quantity) || 0,
+          unit:         i.unit || 'Box',
+          remarks:      i.remarks || '',
+        }))
+    : [];
+
+  return {
+    ...body,
+    supplier_id:   toNull(body.supplier_id),
+    warehouse_id:  toNull(body.warehouse_id),
+    required_date: toNull(body.required_date),
+    date:          toNull(body.date) || new Date(),
+    items,
+  };
+}
+
 /** GET /api/purchase-requisitions */
 async function list(req, res) {
   try {
@@ -43,7 +74,7 @@ async function create(req, res) {
   try {
     const requisition_no = await nextPRNo(req.user.company_id);
     const doc = await PurchaseRequisition.create({
-      ...req.body,
+      ...sanitizeBody(req.body),
       company_id:      req.user.company_id,
       requisition_no,
       created_by:      req.user._id,
@@ -58,8 +89,8 @@ async function update(req, res) {
   try {
     const doc = await PurchaseRequisition.findOneAndUpdate(
       { _id: req.params.id, company_id: req.user.company_id, status: 'Draft' },
-      req.body,
-      { new: true }
+      sanitizeBody(req.body),
+      { new: true, runValidators: true }
     );
     if (!doc) return sendError(res, 'Not found or not editable', 404);
     sendSuccess(res, doc, 'Updated');
