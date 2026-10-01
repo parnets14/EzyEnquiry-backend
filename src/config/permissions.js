@@ -28,10 +28,28 @@ const MODULE_CATALOG = [
   { key: 'products', label: 'Product Management', category: 'Product Management', actions: [action('view', 'View'), action('create', 'Add'), action('edit', 'Edit'), action('delete', 'Delete'), action('view_deleted', 'View Recycle Bin'), action('restore', 'Restore'), action('export', 'Download / Export')] },
 
   { key: 'suppliers', label: 'Supplier Management', category: 'Purchase & Inventory', actions: crud() },
-  { key: 'purchases', label: 'Purchase Management', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Add'), action('edit', 'Edit'), action('delete', 'Delete'), action('approve', 'Approve'), action('stock_in', 'Receive Stock'), action('complete', 'Complete'), action('cancel', 'Cancel'), action('export', 'Export')] },
+  { key: 'purchases', label: 'Purchase Bills', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Add'), action('edit', 'Edit'), action('delete', 'Delete'), action('approve', 'Approve'), action('stock_in', 'Receive Stock'), action('complete', 'Complete'), action('cancel', 'Cancel'), action('export', 'Export')] },
+  { key: 'purchase_dashboard', label: 'Purchase Dashboard', category: 'Purchase & Inventory', actions: [action('view', 'View')] },
+  { key: 'purchase_requisition', label: 'Purchase Requisition', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Create'), action('edit', 'Edit'), action('delete', 'Delete'), action('approve', 'Approve'), action('reject', 'Reject'), action('convert', 'Convert to PO'), action('cancel', 'Cancel')] },
+  { key: 'purchase_orders', label: 'Purchase Orders', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Create'), action('edit', 'Edit'), action('delete', 'Delete'), action('approve', 'Approve'), action('send', 'Send'), action('cancel', 'Cancel'), action('export', 'Export')] },
+  { key: 'grn', label: 'GRN / Goods Receipt', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Create GRN'), action('edit', 'Edit'), action('approve', 'Approve'), action('cancel', 'Cancel'), action('export', 'Export')] },
+  { key: 'quality_inspection', label: 'Quality Inspection', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Record QC'), action('approve', 'Approve QC'), action('reject', 'Reject QC')] },
+  { key: 'purchase_invoice', label: 'Purchase Invoice', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Create'), action('edit', 'Edit'), action('export', 'Print / Export')] },
+  { key: 'purchase_return', label: 'Purchase Return', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Create Return'), action('approve', 'Approve'), action('complete', 'Complete'), action('cancel', 'Cancel')] },
+  { key: 'purchase_reports', label: 'Purchase Reports', category: 'Purchase & Inventory', actions: [action('view', 'View Reports'), action('export', 'Export')] },
+  { key: 'inventory_dashboard', label: 'Inventory Dashboard', category: 'Purchase & Inventory', actions: [action('view', 'View')] },
   { key: 'warehouses', label: 'Warehouse Management', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Add'), action('edit', 'Edit'), action('delete', 'Delete'), action('view_stock', 'View Stock')] },
-  { key: 'inventory', label: 'Inventory Management', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('stock_in', 'Stock In'), action('stock_out', 'Stock Out')] },
+  { key: 'unit_conversion', label: 'Units & Conversion', category: 'Purchase & Inventory', actions: crud() },
+  { key: 'rack_bin', label: 'Rack / Bin Locations', category: 'Purchase & Inventory', actions: crud() },
+  { key: 'opening_stock', label: 'Opening Stock', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Add Opening Stock'), action('edit', 'Edit'), action('delete', 'Delete')] },
+  { key: 'inventory', label: 'Current Stock', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('stock_in', 'Stock In'), action('stock_out', 'Stock Out')] },
+  { key: 'stock_ledger', label: 'Stock Ledger', category: 'Purchase & Inventory', actions: [action('view', 'View Ledger'), action('export', 'Export')] },
   { key: 'stock_transfer', label: 'Stock Transfer', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('transfer', 'Create Transfer'), action('approve', 'Approve'), action('complete', 'Complete'), action('cancel', 'Cancel'), action('delete', 'Delete')] },
+  { key: 'stock_adjustment', label: 'Stock Adjustment', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Create Adjustment'), action('approve', 'Approve'), action('reject', 'Reject'), action('export', 'Export')] },
+  { key: 'damage_breakage', label: 'Damage / Breakage', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Record Damage'), action('approve', 'Approve'), action('export', 'Export')] },
+  { key: 'batch_lot', label: 'Batch / Lot Management', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Create'), action('edit', 'Edit'), action('delete', 'Delete')] },
+  { key: 'shade_caliber', label: 'Shade / Caliber', category: 'Purchase & Inventory', actions: [action('view', 'View'), action('create', 'Create'), action('edit', 'Edit'), action('delete', 'Delete')] },
+  { key: 'inventory_reports', label: 'Inventory Reports', category: 'Purchase & Inventory', actions: [action('view', 'View Reports'), action('export', 'Export')] },
 
   { key: 'product_search', label: 'Product Search', category: 'Marketplace', actions: [action('view', 'View / Search')] },
   { key: 'enquiries', label: 'Enquiry Management', category: 'Marketplace', actions: [action('view', 'View'), action('create', 'Create'), action('edit', 'Edit'), action('delete', 'Delete'), action('reply', 'Reply'), action('offer', 'Send Offer'), action('close', 'Close / Cancel'), action('convert', 'Convert to Order')] },
@@ -72,10 +90,10 @@ const CATALOG_BY_KEY = Object.fromEntries(MODULE_CATALOG.map(module => [module.k
 const ROLE_MODULES = {
   'Super Admin': '*',
   'Company Owner': '*',
-  'Manager': ['dashboard', 'profile', 'notifications', 'categories', 'brands', 'products', 'suppliers', 'warehouses', 'inventory', 'stock_transfer', 'product_search', 'enquiries', 'orders', 'dispatches', 'customers', 'leads', 'followups', 'employees', 'attendance', 'reports', 'gradient_calc'],
-  'Accountant': ['dashboard', 'profile', 'notifications', 'products', 'suppliers', 'purchases', 'customers', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'reports', 'documents', 'gradient_calc'],
-  'Sales Executive': ['dashboard', 'profile', 'notifications', 'products', 'product_search', 'enquiries', 'orders', 'customers', 'leads', 'followups', 'quotations', 'gradient_calc'],
-  'Warehouse Staff': ['dashboard', 'profile', 'notifications', 'product_search', 'warehouses', 'inventory', 'stock_transfer', 'orders', 'dispatches', 'gradient_calc'],
+  'Manager': ['dashboard', 'profile', 'notifications', 'categories', 'brands', 'products', 'suppliers', 'purchase_dashboard', 'purchase_requisition', 'purchase_orders', 'purchases', 'grn', 'quality_inspection', 'purchase_invoice', 'purchase_return', 'purchase_reports', 'inventory_dashboard', 'warehouses', 'unit_conversion', 'rack_bin', 'opening_stock', 'inventory', 'stock_ledger', 'stock_transfer', 'stock_adjustment', 'damage_breakage', 'batch_lot', 'shade_caliber', 'inventory_reports', 'product_search', 'enquiries', 'orders', 'dispatches', 'customers', 'leads', 'followups', 'employees', 'attendance', 'reports', 'gradient_calc'],
+  'Accountant': ['dashboard', 'profile', 'notifications', 'products', 'suppliers', 'purchases', 'purchase_dashboard', 'purchase_orders', 'grn', 'purchase_invoice', 'purchase_return', 'purchase_reports', 'inventory_dashboard', 'inventory', 'stock_ledger', 'inventory_reports', 'customers', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'reports', 'documents', 'gradient_calc'],
+  'Sales Executive': ['dashboard', 'profile', 'notifications', 'products', 'product_search', 'enquiries', 'orders', 'customers', 'leads', 'followups', 'quotations', 'inventory_dashboard', 'inventory', 'gradient_calc'],
+  'Warehouse Staff': ['dashboard', 'profile', 'notifications', 'product_search', 'warehouses', 'rack_bin', 'opening_stock', 'inventory', 'inventory_dashboard', 'stock_ledger', 'stock_transfer', 'stock_adjustment', 'damage_breakage', 'batch_lot', 'shade_caliber', 'grn', 'quality_inspection', 'orders', 'dispatches', 'gradient_calc'],
   'Retailer': ['dashboard', 'profile', 'notifications', 'product_search', 'enquiries', 'orders', 'gradient_calc'],
   'Wholesaler': ['dashboard', 'profile', 'notifications', 'product_search', 'products', 'inventory', 'stock_transfer', 'warehouses', 'suppliers', 'purchases', 'enquiries', 'orders', 'dispatches', 'customers', 'leads', 'followups', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'staff', 'reports', 'documents', 'subscriptions', 'gradient_calc'],
 }
@@ -87,6 +105,12 @@ const ROLE_ACTION_GRANTS = {
   'Manager': {
     dashboard: ['view'], profile: '*', notifications: '*',
     categories: ['view'], brands: ['view'], products: ['view', 'export'], suppliers: ['view'],
+    purchase_dashboard: ['view'], purchase_requisition: ['view', 'create', 'edit', 'delete', 'approve', 'reject', 'convert', 'cancel'],
+    purchase_orders: ['view', 'create', 'edit', 'delete', 'approve', 'send', 'cancel'], purchases: ['view', 'create', 'edit', 'delete', 'approve', 'stock_in', 'complete', 'cancel', 'export'],
+    grn: ['view', 'create', 'edit', 'approve', 'cancel'], quality_inspection: ['view', 'create', 'approve', 'reject'],
+    purchase_invoice: ['view', 'create', 'edit', 'export'], purchase_return: ['view', 'create', 'edit', 'approve', 'complete', 'cancel'], purchase_reports: ['view', 'export'],
+    inventory_dashboard: ['view'], unit_conversion: '*', rack_bin: '*', opening_stock: '*', stock_ledger: ['view', 'export'],
+    stock_adjustment: ['view', 'create', 'approve', 'reject', 'export'], damage_breakage: ['view', 'create', 'approve', 'export'], batch_lot: '*', shade_caliber: '*', inventory_reports: ['view', 'export'],
     warehouses: ['view', 'create', 'edit', 'view_stock'], inventory: '*', stock_transfer: '*', product_search: ['view'],
     enquiries: ['view', 'edit', 'reply', 'offer', 'close', 'convert'], orders: '*', dispatches: '*',
     customers: ['view', 'create', 'edit'], leads: ['view', 'create', 'edit', 'convert'], followups: '*',
@@ -94,6 +118,9 @@ const ROLE_ACTION_GRANTS = {
   },
   'Accountant': {
     dashboard: ['view'], profile: '*', notifications: '*', products: ['view'], suppliers: ['view'], customers: ['view'],
+    purchase_dashboard: ['view'], purchase_orders: ['view', 'create', 'edit', 'approve', 'send', 'cancel'], grn: ['view', 'create', 'edit', 'approve', 'cancel'],
+    purchase_invoice: ['view', 'create', 'edit', 'export'], purchase_return: ['view', 'create', 'edit', 'approve', 'complete', 'cancel'], purchase_reports: ['view', 'export'],
+    inventory_dashboard: ['view'], inventory: ['view'], stock_ledger: ['view', 'export'], inventory_reports: ['view', 'export'],
     purchases: ['view', 'create', 'edit', 'export'], quotations: ['view', 'create', 'edit', 'send', 'export'],
     invoices: '*', sales: '*', expenses: '*', payments: '*', accounts: '*', profit_loss: '*', reports: '*',
     documents: ['view', 'upload', 'download'],
@@ -106,6 +133,9 @@ const ROLE_ACTION_GRANTS = {
   },
   'Warehouse Staff': {
     dashboard: ['view'], profile: '*', notifications: '*', product_search: ['view'], warehouses: ['view', 'view_stock'],
+    rack_bin: ['view', 'create', 'edit'], opening_stock: ['view', 'create', 'edit'], inventory_dashboard: ['view'], stock_ledger: ['view'],
+    stock_adjustment: ['view', 'create'], damage_breakage: ['view', 'create'], batch_lot: ['view', 'create', 'edit'], shade_caliber: ['view', 'create', 'edit'],
+    grn: ['view', 'create', 'edit', 'approve'], quality_inspection: ['view', 'create', 'approve', 'reject'],
     inventory: '*', stock_transfer: '*', orders: ['view', 'pick', 'sort', 'pack', 'dispatch'], dispatches: '*',
   },
   'Retailer': {
@@ -199,6 +229,23 @@ function transitionAction(moduleKey, req) {
     if (method === 'POST') return 'transfer'
     if (/\/status$/.test(path)) return status.includes('complete') ? 'complete' : status.includes('cancel') ? 'cancel' : 'approve'
   }
+  if (moduleKey === 'purchase_requisition') {
+    if (/\/convert-to-po$/.test(path)) return 'convert'
+    if (/\/status$/.test(path)) return status.includes('reject') ? 'reject' : status.includes('cancel') ? 'cancel' : 'approve'
+  }
+  if (moduleKey === 'purchase_orders') {
+    if (/\/send$/.test(path)) return 'send'
+    if (/\/status$/.test(path)) return status.includes('cancel') ? 'cancel' : 'approve'
+  }
+  if (moduleKey === 'grn' && /\/(approve|cancel)$/.test(path)) return path.endsWith('/cancel') ? 'cancel' : 'approve'
+  if (moduleKey === 'quality_inspection' && /\/(approve|reject)$/.test(path)) return path.endsWith('/reject') ? 'reject' : 'approve'
+  if (moduleKey === 'purchase_return' && /\/status$/.test(path)) {
+    return status.includes('complete') ? 'complete' : status.includes('cancel') ? 'cancel' : 'approve'
+  }
+  if (moduleKey === 'inventory' && /\/settings$/.test(path)) return 'edit'
+  if (moduleKey === 'inventory' && /\/(reserve|release-reserve|start-picking|complete-packing|dispatch-stock-out|block)$/.test(path)) return 'stock_out'
+  if (moduleKey === 'stock_ledger' && /\/export$/.test(path)) return 'export'
+  if (moduleKey === 'stock_adjustment' && /\/reject$/.test(path)) return 'reject'
   if (moduleKey === 'purchases' && /\/status$/.test(path)) {
     if (status === 'approved') return 'approve'
     if (status === 'received') return 'stock_in'

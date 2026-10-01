@@ -58,6 +58,13 @@ const customerRoutes = require("./routes/CRM Management/customerRoutes");
 const leadRoutes = require("./routes/CRM Management/leadRoutes");
 const followupRoutes = require("./routes/CRM Management/followupRoutes");
 const purchaseRoutes = require("./routes/Purchase & Inventory Management/purchaseRoutes");
+const purchaseRequisitionRoutes = require("./routes/Purchase & Inventory Management/purchaseRequisitionRoutes");
+const purchaseOrderRoutes = require("./routes/Purchase & Inventory Management/purchaseOrderRoutes");
+const grnRoutes = require("./routes/Purchase & Inventory Management/grnRoutes");
+const qualityInspectionRoutes = require("./routes/Purchase & Inventory Management/qualityInspectionRoutes");
+const purchaseReturnRoutes = require("./routes/Purchase & Inventory Management/purchaseReturnRoutes");
+const purchaseReportRoutes = require("./routes/Purchase & Inventory Management/purchaseReportRoutes");
+const purchaseInvoiceRoutes = require("./routes/Purchase & Inventory Management/purchaseInvoiceRoutes");
 const stockTransferRoutes = require("./routes/Purchase & Inventory Management/stockTransferRoutes");
 const salesRoutes = require("./routes/Finance Management/salesRoutes");
 const expenseRoutes = require("./routes/Finance Management/expenseRoutes");
@@ -566,6 +573,62 @@ app.use(
   requireActiveCompany,
   moduleAccess(MODULES.PURCHASES),
   purchaseRoutes,
+);
+app.use(
+  "/api/purchase-requisitions",
+  authenticate,
+  requireCompany,
+  requireActiveCompany,
+  moduleAccess(MODULES.PURCHASE_REQUISITION),
+  purchaseRequisitionRoutes,
+);
+app.use(
+  "/api/purchase-orders",
+  authenticate,
+  requireCompany,
+  requireActiveCompany,
+  moduleAccess(MODULES.PURCHASE_ORDERS),
+  purchaseOrderRoutes,
+);
+app.use(
+  "/api/grns",
+  authenticate,
+  requireCompany,
+  requireActiveCompany,
+  moduleAccess(MODULES.GRN),
+  grnRoutes,
+);
+app.use(
+  "/api/quality-inspections",
+  authenticate,
+  requireCompany,
+  requireActiveCompany,
+  moduleAccess(MODULES.QUALITY_INSPECTION),
+  qualityInspectionRoutes,
+);
+app.use(
+  "/api/purchase-returns",
+  authenticate,
+  requireCompany,
+  requireActiveCompany,
+  moduleAccess(MODULES.PURCHASE_RETURN),
+  purchaseReturnRoutes,
+);
+app.use(
+  "/api/purchase-reports",
+  authenticate,
+  requireCompany,
+  requireActiveCompany,
+  moduleAccess(MODULES.PURCHASE_REPORTS),
+  purchaseReportRoutes,
+);
+app.use(
+  "/api/purchase-invoices",
+  authenticate,
+  requireCompany,
+  requireActiveCompany,
+  moduleAccess(MODULES.PURCHASE_INVOICE),
+  purchaseInvoiceRoutes,
 );
 app.use(
   "/api/stock-transfers",

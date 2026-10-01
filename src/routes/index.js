@@ -33,11 +33,17 @@ router.use('/brands',         requireCompany, moduleAccess(MODULES.BRANDS),     
 router.use('/products',       requireCompany, moduleAccess(MODULES.PRODUCTS),   require('./Product Management/productRoutes'));
 
 // ── Purchase & Inventory Management ─────────────────────────
-router.use('/suppliers',       requireCompany, moduleAccess(MODULES.SUPPLIERS),      require('./Purchase & Inventory Management/supplierRoutes'));
-router.use('/purchases',       requireCompany, moduleAccess(MODULES.PURCHASES),      require('./Purchase & Inventory Management/purchaseRoutes'));
-router.use('/warehouses',      requireCompany, moduleAccess(MODULES.WAREHOUSES),     require('./Purchase & Inventory Management/warehouseRoutes'));
-router.use('/inventory',       requireCompany, moduleAccess(MODULES.INVENTORY),      require('./Purchase & Inventory Management/inventoryRoutes'));
-router.use('/stock-transfers', requireCompany, moduleAccess(MODULES.STOCK_TRANSFER), require('./Purchase & Inventory Management/stockTransferRoutes'));
+router.use('/suppliers',              requireCompany, moduleAccess(MODULES.SUPPLIERS),              require('./Purchase & Inventory Management/supplierRoutes'));
+router.use('/purchases',              requireCompany, moduleAccess(MODULES.PURCHASES),              require('./Purchase & Inventory Management/purchaseRoutes'));
+router.use('/purchase-requisitions',  requireCompany, moduleAccess(MODULES.PURCHASE_REQUISITION),  require('./Purchase & Inventory Management/purchaseRequisitionRoutes'));
+router.use('/purchase-orders',        requireCompany, moduleAccess(MODULES.PURCHASE_ORDERS),       require('./Purchase & Inventory Management/purchaseOrderRoutes'));
+router.use('/grns',                   requireCompany, moduleAccess(MODULES.GRN),                   require('./Purchase & Inventory Management/grnRoutes'));
+router.use('/quality-inspections',    requireCompany, moduleAccess(MODULES.QUALITY_INSPECTION),    require('./Purchase & Inventory Management/qualityInspectionRoutes'));
+router.use('/purchase-returns',       requireCompany, moduleAccess(MODULES.PURCHASE_RETURN),       require('./Purchase & Inventory Management/purchaseReturnRoutes'));
+router.use('/purchase-reports',       requireCompany, moduleAccess(MODULES.PURCHASE_REPORTS),      require('./Purchase & Inventory Management/purchaseReportRoutes'));
+router.use('/warehouses',             requireCompany, moduleAccess(MODULES.WAREHOUSES),            require('./Purchase & Inventory Management/warehouseRoutes'));
+router.use('/inventory',              requireCompany, moduleAccess(MODULES.INVENTORY),             require('./Purchase & Inventory Management/inventoryRoutes'));
+router.use('/stock-transfers',        requireCompany, moduleAccess(MODULES.STOCK_TRANSFER),        require('./Purchase & Inventory Management/stockTransferRoutes'));
 
 // ── Marketplace Management ───────────────────────────────────
 router.use('/enquiries',  requireCompany, moduleAccess(MODULES.ENQUIRIES),  require('./Marketplace Management/enquiryRoutes'));
