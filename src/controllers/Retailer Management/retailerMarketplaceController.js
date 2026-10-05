@@ -1469,13 +1469,26 @@ function hasReplied(row) {
 
 async function enquiryReplies(req, res) {
   if (!isObjectId(req.params.id)) return sendError(res, 'Enquiry not found.', 404)
-  const anchor = await Enquiry.findOne(myEnquiryQuery(req, req.params.id)).select('enq_code').lean()
+  const anchor = await Enquiry.findOne(myEnquiryQuery(req, req.params.id))
+    .select('enq_code broadcast_owner_company_id').lean()
   if (!anchor) return sendError(res, 'Enquiry not found.', 404)
 
-  const rows = await Enquiry.find({ enq_code: anchor.enq_code })
-    .populate('company_id', 'name company_code city state mobile')
-    .sort({ updated_at: -1 })
-    .lean()
+  // Conversation isolation for broadcasts:
+  //   • The broadcast OWNER (sender) wants the whole roster — "3 of 5 replied",
+  //     every recipient's quote — so it reads ALL siblings by `enq_code`.
+  //   • A plain RECIPIENT must only ever see THEIR OWN reply, never the other
+  //     recipients' quotes (a retailer must not see a wholesaler's price, and
+  //     vice versa). So a recipient's roster is just their own row.
+  const isBroadcastOwner = anchor.broadcast_owner_company_id
+    && String(anchor.broadcast_owner_company_id) === String(req.user.company_id)
+  const rows = (anchor.enq_code && isBroadcastOwner)
+    ? await Enquiry.find({ enq_code: anchor.enq_code })
+        .populate('company_id', 'name company_code city state mobile')
+        .sort({ updated_at: -1 })
+        .lean()
+    : await Enquiry.find({ _id: anchor._id })
+        .populate('company_id', 'name company_code city state mobile')
+        .lean()
 
   const replied  = rows.filter(hasReplied).map(shapeReply)
   const awaiting = rows.filter(r => !hasReplied(r)).map(shapeReply)
@@ -1521,13 +1534,20 @@ async function listMessages(req, res) {
       { broadcast_owner_company_id: req.user.company_id },
       { company_id: req.user.company_id },
     ],
-  }).select('_id enq_code').lean()
+  }).select('_id enq_code broadcast_owner_company_id').lean()
   if (!enquiry) return sendError(res, 'Enquiry not found.', 404)
 
-  // For a broadcast owner, gather all sibling row ids so we get the full thread
-  // across all recipients rather than just one seller's slice.
+  // Conversation isolation for broadcasts:
+  //   • The broadcast OWNER (sender) sees the FULL thread across every recipient
+  //     sibling — they are talking to all of them.
+  //   • A plain RECIPIENT sees ONLY their own row's thread with the creator —
+  //     NOT other recipients' conversations. Previously this expanded to every
+  //     sibling by `enq_code` for anyone, so a retailer recipient saw the
+  //     wholesaler recipient's messages (and vice versa).
+  const isBroadcastOwner = enquiry.broadcast_owner_company_id
+    && String(enquiry.broadcast_owner_company_id) === String(req.user.company_id)
   let rowIds = [enquiry._id]
-  if (enquiry.enq_code) {
+  if (enquiry.enq_code && isBroadcastOwner) {
     const siblings = await Enquiry.find({ enq_code: enquiry.enq_code }).select('_id').lean()
     rowIds = siblings.map(s => s._id)
   }

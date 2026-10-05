@@ -364,13 +364,24 @@ async function enquiryReplies(req, res) {
       { company_id: req.user.company_id },
       { broadcast_owner_company_id: req.user.company_id },
     ],
-  }).select('enq_code').lean();
+  }).select('enq_code broadcast_owner_company_id').lean();
   if (!anchor) return sendError(res, 'Enquiry not found.', 404);
 
-  const rows = await Enquiry.find({ enq_code: anchor.enq_code })
-    .populate('company_id', 'name company_code city state mobile email')
-    .sort({ updated_at: -1 })
-    .lean();
+  // Conversation isolation for broadcasts:
+  //   • The broadcast OWNER (sender) / an operator gets the whole roster across
+  //     every recipient sibling.
+  //   • A plain RECIPIENT sees ONLY their own row — never other recipients'
+  //     quotes (a wholesaler must not see a retailer's reply and vice versa).
+  const isBroadcastOwner = anchor.broadcast_owner_company_id
+    && String(anchor.broadcast_owner_company_id) === String(req.user.company_id);
+  const rows = (anchor.enq_code && (isBroadcastOwner || isOperator(req.user)))
+    ? await Enquiry.find({ enq_code: anchor.enq_code })
+        .populate('company_id', 'name company_code city state mobile email')
+        .sort({ updated_at: -1 })
+        .lean()
+    : await Enquiry.find({ _id: anchor._id })
+        .populate('company_id', 'name company_code city state mobile email')
+        .lean();
 
   const replied  = rows.filter(hasReplied).map(shapeReply);
   const awaiting = rows.filter(r => !hasReplied(r)).map(shapeReply);
@@ -997,11 +1008,17 @@ async function listReplyHistory(req, res) {
       { buyer_company_id: req.user.company_id },
       ...(isOperator(req.user) ? [{}] : []),
     ],
-  }).select('_id enq_code').lean();
+  }).select('_id enq_code broadcast_owner_company_id').lean();
   if (!enquiry) return sendError(res, 'Enquiry not found.', 404);
 
-  // For broadcasts, fetch history across all sibling rows
-  const filter = enquiry.enq_code
+  // Conversation isolation for broadcasts:
+  //   • The broadcast OWNER (sender) / operator sees the full reply history
+  //     across every recipient sibling.
+  //   • A plain RECIPIENT sees ONLY their own row's history — not other
+  //     recipients' replies (retailer must not see wholesaler's, vice versa).
+  const isBroadcastOwner = enquiry.broadcast_owner_company_id
+    && String(enquiry.broadcast_owner_company_id) === String(req.user.company_id);
+  const filter = (enquiry.enq_code && (isBroadcastOwner || isOperator(req.user)))
     ? { enq_code: enquiry.enq_code }
     : { enquiry_id: enquiry._id };
 
