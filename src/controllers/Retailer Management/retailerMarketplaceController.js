@@ -2299,10 +2299,18 @@ async function listReplyHistory(req, res) {
       { buyer_company_id: req.user.company_id },
       { broadcast_owner_company_id: req.user.company_id },
     ],
-  }).select('_id enq_code').lean()
+  }).select('_id enq_code broadcast_owner_company_id').lean()
   if (!enquiry) return sendError(res, 'Enquiry not found.', 404)
 
-  const filter = enquiry.enq_code
+  // Conversation isolation for broadcasts:
+  //   • The broadcast OWNER (sender) sees reply history across every recipient
+  //     sibling.
+  //   • A plain RECIPIENT sees ONLY their own row's history — NOT other
+  //     recipients' replies. This is why a wholesaler's reply was showing up in
+  //     the retailer's own reply form on an admin-created broadcast.
+  const isBroadcastOwner = enquiry.broadcast_owner_company_id
+    && String(enquiry.broadcast_owner_company_id) === String(req.user.company_id)
+  const filter = (enquiry.enq_code && isBroadcastOwner)
     ? { enq_code: enquiry.enq_code }
     : { enquiry_id: enquiry._id }
 
