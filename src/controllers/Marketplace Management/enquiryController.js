@@ -367,14 +367,18 @@ async function enquiryReplies(req, res) {
   }).select('enq_code broadcast_owner_company_id').lean();
   if (!anchor) return sendError(res, 'Enquiry not found.', 404);
 
-  // Conversation isolation for broadcasts:
-  //   • The broadcast OWNER (sender) / an operator gets the whole roster across
-  //     every recipient sibling.
-  //   • A plain RECIPIENT sees ONLY their own row — never other recipients'
-  //     quotes (a wholesaler must not see a retailer's reply and vice versa).
+  // Conversation isolation for broadcasts — gated STRICTLY on broadcast
+  // ownership, NOT operator status:
+  //   • Only the broadcast OWNER (the company that CREATED/sent it) sees the
+  //     whole roster across every recipient sibling.
+  //   • Everyone else — including an admin/operator who merely RECEIVED someone
+  //     else's broadcast — sees ONLY their own row. Otherwise, when a wholesaler
+  //     creates an enquiry sent to admin + retailers, the admin (an operator but
+  //     only a recipient here) would see the retailers' replies too. The admin
+  //     is the owner ONLY of enquiries it created, and sees all replies there.
   const isBroadcastOwner = anchor.broadcast_owner_company_id
     && String(anchor.broadcast_owner_company_id) === String(req.user.company_id);
-  const rows = (anchor.enq_code && (isBroadcastOwner || isOperator(req.user)))
+  const rows = (anchor.enq_code && isBroadcastOwner)
     ? await Enquiry.find({ enq_code: anchor.enq_code })
         .populate('company_id', 'name company_code city state mobile email')
         .sort({ updated_at: -1 })
@@ -804,10 +808,13 @@ async function listMessages(req, res) {
   if (!anchor) return sendError(res, 'Enquiry not found.', 404);
 
   let rowIds = [anchor._id];
-  // Operators and broadcast owners see all siblings (full thread across all sellers)
+  // Only the broadcast OWNER (the creator) sees the full thread across every
+  // recipient sibling. An admin/operator who merely RECEIVED someone else's
+  // broadcast is just a recipient here and must see only its own thread —
+  // otherwise it would read other recipients' private conversations.
   const isBroadcastOwner = anchor.broadcast_owner_company_id
     && String(anchor.broadcast_owner_company_id) === String(req.user.company_id);
-  if (isBroadcastOwner || isOperator(req.user)) {
+  if (isBroadcastOwner) {
     const rows = await Enquiry.find({ enq_code: anchor.enq_code }).select('_id').lean();
     rowIds = rows.map(r => r._id);
   }
