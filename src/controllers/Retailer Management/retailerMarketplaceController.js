@@ -2302,17 +2302,12 @@ async function listReplyHistory(req, res) {
   }).select('_id enq_code broadcast_owner_company_id').lean()
   if (!enquiry) return sendError(res, 'Enquiry not found.', 404)
 
-  // Conversation isolation for broadcasts:
-  //   • The broadcast OWNER (sender) sees reply history across every recipient
-  //     sibling.
-  //   • A plain RECIPIENT sees ONLY their own row's history — NOT other
-  //     recipients' replies. This is why a wholesaler's reply was showing up in
-  //     the retailer's own reply form on an admin-created broadcast.
-  const isBroadcastOwner = enquiry.broadcast_owner_company_id
-    && String(enquiry.broadcast_owner_company_id) === String(req.user.company_id)
-  const filter = (enquiry.enq_code && isBroadcastOwner)
-    ? { enq_code: enquiry.enq_code }
-    : { enquiry_id: enquiry._id }
+  // Reply history is the quote timeline WITHIN ONE conversation (one recipient
+  // ↔ the creator), so it is ALWAYS scoped to the specific enquiry row — never
+  // expanded across the broadcast's siblings. This is why a wholesaler's reply
+  // was leaking into the retailer's reply form (and vice versa) on an
+  // admin-created broadcast. The per-recipient roster lives in enquiryReplies.
+  const filter = { enquiry_id: enquiry._id }
 
   const history = await EnquiryReplyHistory.find(filter).sort({ created_at: 1 }).lean()
 

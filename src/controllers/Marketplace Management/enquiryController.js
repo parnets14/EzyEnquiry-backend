@@ -1011,16 +1011,13 @@ async function listReplyHistory(req, res) {
   }).select('_id enq_code broadcast_owner_company_id').lean();
   if (!enquiry) return sendError(res, 'Enquiry not found.', 404);
 
-  // Conversation isolation for broadcasts:
-  //   • The broadcast OWNER (sender) / operator sees the full reply history
-  //     across every recipient sibling.
-  //   • A plain RECIPIENT sees ONLY their own row's history — not other
-  //     recipients' replies (retailer must not see wholesaler's, vice versa).
-  const isBroadcastOwner = enquiry.broadcast_owner_company_id
-    && String(enquiry.broadcast_owner_company_id) === String(req.user.company_id);
-  const filter = (enquiry.enq_code && (isBroadcastOwner || isOperator(req.user)))
-    ? { enq_code: enquiry.enq_code }
-    : { enquiry_id: enquiry._id };
+  // Reply history is the quote timeline WITHIN ONE conversation (one recipient
+  // ↔ the creator), so it is ALWAYS scoped to the specific enquiry row — never
+  // expanded across the broadcast's siblings. The "who replied" roster
+  // (enquiryReplies) is what shows every recipient to the owner/admin; this
+  // endpoint must stay per-row for everyone, otherwise the admin's reply panel
+  // for seller "A" would also list seller "B"'s quotes.
+  const filter = { enquiry_id: enquiry._id };
 
   const history = await EnquiryReplyHistory.find(filter)
     .sort({ created_at: 1 })
