@@ -295,8 +295,20 @@ async function getEnquiry(req, res) {
     ],
   })
     .populate('product_id', 'image_urls')
+    .populate('company_id', '_id')
     .lean();
   if (!enq) return sendError(res, 'Enquiry not found.', 404);
+
+  // Stamp `direction` the SAME way listEnquiries does, so the detail screen can
+  // tell SENT from RECEIVED. Without this the client defaults every opened
+  // enquiry to "received" and shows reply/status actions on broadcasts the
+  // company itself raised.
+  const me = String(req.user.company_id);
+  enq.direction = (
+    (enq.broadcast_owner_company_id && String(enq.broadcast_owner_company_id) === me)
+    || (!enq.buyer_company_id && String(enq.company_id?._id || enq.company_id) === me)
+  ) ? 'sent' : 'received';
+
   sendSuccess(res, enq);
 }
 
