@@ -319,17 +319,30 @@ async function listOrders(req, res) {
 }
 
 // GET /api/retailer/admin/enquiries — retailer enquiries across all companies
+//
+// A single retailer enquiry broadcast is stored as N sibling Enquiry docs — one
+// per recipient wholesaler — all sharing ONE `enq_code` (see enquiryController
+// `createEnquiry`). Listing the raw rows made the same enquiry appear many times
+// (same product/qty/date, only status differing). The retailer & wholesaler apps
+// already collapse siblings into one card; this admin list now does the same by
+// grouping on `enq_code` and returning a per-enquiry recipient/status rollup.
+//
+// Rows WITHOUT an enq_code (legacy single enquiries) are grouped by their own
+// _id so each still shows once.
 async function listEnquiries(req, res) {
   if (!ensureSuperAdmin(req, res)) return
   try {
     const { page = 1, limit = 200, status, search } = req.query
-    const skip = (parseInt(page) - 1) * parseInt(limit)
+    const pageNum  = parseInt(page)
+    const limitNum = parseInt(limit)
+    const skip = (pageNum - 1) * limitNum
 
     const companyIds = await retailerCompanyIds()
-    const query = retailerAppDataFilter(companyIds)
-    if (status && status !== 'All') query.status = status
+    const match = retailerAppDataFilter(companyIds)
+    // Status filter: a grouped enquiry matches if ANY sibling has the status, so
+    // apply it after grouping rather than dropping sibling rows up front.
     if (search) {
-      query.$and = [{
+      match.$and = [{
         $or: [
           { retailer_name: { $regex: search, $options: 'i' } },
           { product_name:  { $regex: search, $options: 'i' } },
@@ -337,27 +350,94 @@ async function listEnquiries(req, res) {
         ],
       }]
     }
-    const [total, rows] = await Promise.all([
-      Enquiry.countDocuments(query),
-      Enquiry.find(query)
-        .populate('company_id', 'name company_code')
-        .populate('buyer_company_id', 'name company_code')
-        .sort({ created_at: -1 })
-        .skip(skip).limit(parseInt(limit)).lean(),
-    ])
-    const mapped = rows.map(r => {
-      const own = r.company_id
-      const buyer = r.buyer_company_id
-      const ownIsRetailer = own && companyIds.some(id => String(id) === String(own._id))
+
+    // Group key: enq_code when present, else the doc's own id (legacy singles).
+    const groupKey = { $ifNull: ['$enq_code', { $toString: '$_id' }] }
+
+    const grouped = [
+      { $match: match },
+      { $sort: { created_at: -1 } },
+      {
+        $group: {
+          _id: groupKey,
+          // Anchor = most recent sibling; carries the shared enquiry fields.
+          anchor:        { $first: '$$ROOT' },
+          recipients:    { $sum: 1 },
+          statuses:      { $addToSet: '$status' },
+          // Per-status counts for the rollup chip. Status enum (Enquiry model):
+          // New | Viewed | Replied | Negotiation | Confirmed | Cancelled.
+          // "replied" groups every status past a plain reply so the chip reads
+          // as progress; new/viewed stay distinct.
+          repliedCount:  { $sum: { $cond: [{ $in: ['$status', ['Replied', 'Negotiation', 'Confirmed']] }, 1, 0] } },
+          viewedCount:   { $sum: { $cond: [{ $eq: ['$status', 'Viewed'] }, 1, 0] } },
+          newCount:      { $sum: { $cond: [{ $eq: ['$status', 'New'] }, 1, 0] } },
+          // Best offered price across siblings (lowest non-null), for display.
+          offeredPrices: { $push: '$offered_price' },
+          lastUpdated:   { $max: '$updated_at' },
+        },
+      },
+    ]
+
+    // Status filter now applies to the group (any sibling with that status).
+    if (status && status !== 'All') {
+      grouped.push({ $match: { statuses: status } })
+    }
+
+    grouped.push(
+      { $sort: { 'anchor.created_at': -1 } },
+      {
+        $facet: {
+          meta: [{ $count: 'total' }],
+          data: [{ $skip: skip }, { $limit: limitNum }],
+        },
+      },
+    )
+
+    const [agg] = await Enquiry.aggregate(grouped)
+    const total = agg?.meta?.[0]?.total || 0
+    const groups = agg?.data || []
+
+    // Resolve company names in one batch (aggregation can't $populate cheaply).
+    const idsToResolve = new Set()
+    groups.forEach(g => {
+      if (g.anchor.company_id)       idsToResolve.add(String(g.anchor.company_id))
+      if (g.anchor.buyer_company_id) idsToResolve.add(String(g.anchor.buyer_company_id))
+    })
+    const companies = await Company.find({ _id: { $in: [...idsToResolve] } })
+      .select('name company_code').lean()
+    const companyMap = new Map(companies.map(c => [String(c._id), c]))
+
+    const retailerIdSet = new Set(companyIds.map(String))
+
+    const enquiries = groups.map(g => {
+      const r = g.anchor
+      const own   = r.company_id ? companyMap.get(String(r.company_id)) : null
+      const buyer = r.buyer_company_id ? companyMap.get(String(r.buyer_company_id)) : null
+      const ownIsRetailer = r.company_id && retailerIdSet.has(String(r.company_id))
       const display = ownIsRetailer ? own : (buyer || own)
+
+      const prices = (g.offeredPrices || []).filter(p => p != null)
+      const bestOffer = prices.length ? Math.min(...prices.map(Number)) : null
+
       return {
         ...r,
         company_name: display?.name || r.retailer_name || '—',
         company_code: display?.company_code || '',
         company_id:   display?._id || r.company_id,
+        // Broadcast rollup — one enquiry, N recipients.
+        recipient_count: g.recipients,
+        status_rollup: {
+          replied: g.repliedCount,
+          viewed:  g.viewedCount,
+          new:     g.newCount,
+          total:   g.recipients,
+        },
+        offered_price: bestOffer,
+        updated_at:    g.lastUpdated || r.updated_at,
       }
     })
-    sendSuccess(res, { enquiries: mapped, pagination: paginate(total, parseInt(page), parseInt(limit)) })
+
+    sendSuccess(res, { enquiries, pagination: paginate(total, pageNum, limitNum) })
   } catch (e) {
     sendError(res, e.message, 500)
   }
