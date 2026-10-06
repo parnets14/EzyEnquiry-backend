@@ -272,8 +272,9 @@ router.post('/invoices/:id/pay',    requireRetailerModule('invoices'), marketpla
 router.post('/invoices/:id/pay/confirm', requireRetailerModule('invoices'), marketplace.confirmPayment)
 
 // Subscription (owner only in practice)
-router.get('/subscription/plans',   account.getPlans)
-router.get('/subscription/current', account.getCurrentSubscription)
+router.get ('/subscription/plans',     account.getPlans)
+router.get ('/subscription/current',   account.getCurrentSubscription)
+router.post('/subscription/subscribe', account.subscribeToPlan)
 
 // ── ERP modules (sales, expenses, purchases, inventory, payments, …) ─────────
 // Mounted here rather than in server.js so it inherits this mount's

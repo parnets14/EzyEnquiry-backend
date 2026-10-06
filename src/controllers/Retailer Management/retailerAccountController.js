@@ -224,7 +224,7 @@ async function downloadKycDocument(req, res) {
 }
 
 async function getPlans(_req, res) {
-  return sendSuccess(res, { plans: PLAN_CATALOGUE, purchase_available: false }, 'Plan catalogue retrieved.')
+  return sendSuccess(res, { plans: PLAN_CATALOGUE, purchase_available: true }, 'Plan catalogue retrieved.')
 }
 
 async function getCurrentSubscription(req, res) {
@@ -248,8 +248,66 @@ async function getCurrentSubscription(req, res) {
       enquiries: { used: enquiryUsage, limit: plan.limits.enquiries_per_month },
       orders: { used: orderUsage, limit: plan.limits.orders_per_month },
     },
-    purchase_available: false,
+    purchase_available: true,
   }, 'Subscription retrieved.')
+}
+
+/**
+ * POST /api/retailer/subscription/subscribe
+ *
+ * Self-service plan activation for the retailer owner — the retailer-side twin of
+ * the wholesaler's `subscriptionController.createSubscription` (POST /api/subscriptions).
+ * It logs a Subscription row and points `Company.subscription_plan` at the new plan,
+ * which is exactly what the wholesaler's "Upgrade to X" button does.
+ *
+ * ⚠️ No payment gateway is involved (the wholesaler has none either): this records the
+ * chosen plan + amount and activates it immediately. The amount is what the app sends
+ * from the plan catalogue, so a caller cannot invent a price.
+ */
+async function subscribeToPlan(req, res) {
+  // Changing the company's billing plan is an owner action, not a staff one.
+  if (req.user?.role === 'RetailerStaff') {
+    return sendError(res, 'Only the account owner can change the subscription plan.', 403)
+  }
+
+  const { plan: planId, months } = req.body || {}
+  const target = PLAN_CATALOGUE.find(item => item.id === planId)
+  if (!target) return sendError(res, 'Unknown plan.', 400)
+
+  const now = new Date()
+  const dur = parseInt(months, 10) > 0 ? parseInt(months, 10) : 1
+  const expires = new Date(now)
+  expires.setMonth(expires.getMonth() + dur)
+
+  // Price comes from the catalogue, never from the client.
+  const paid = (target.price_inr || 0) * dur
+
+  const subscription = await Subscription.create({
+    company_id:  req.user.company_id,
+    plan:        target.id,
+    starts_at:   now,
+    expires_at:  expires,
+    amount_paid: paid,
+    payment_ref: `APP-${Date.now()}`,
+    status:      'Active',
+  })
+
+  await Company.findByIdAndUpdate(req.user.company_id, {
+    subscription_plan: target.id,
+    plan_expires_at:   expires,
+  })
+
+  return sendSuccess(res, {
+    subscription: {
+      id:          subscription._id,
+      plan:        subscription.plan,
+      starts_at:   subscription.starts_at,
+      expires_at:  subscription.expires_at,
+      status:      subscription.status,
+      amount_paid: subscription.amount_paid,
+    },
+    plan: target,
+  }, `You are now on the ${target.name} plan.`, 201)
 }
 
 async function getCapabilities(_req, res) {
@@ -258,7 +316,7 @@ async function getCapabilities(_req, res) {
     capabilities: authController.capabilities(),
     notes: {
       order_tracking: 'Status and dispatch metadata are available; live GPS is not configured.',
-      payments: 'Plan purchase and arbitrary payment submission are disabled.',
+      payments: 'Plan purchase is available from the Subscription screen; arbitrary payment submission is disabled.',
     },
   })
 }
@@ -278,5 +336,6 @@ module.exports = {
   downloadKycDocument,
   getPlans,
   getCurrentSubscription,
+  subscribeToPlan,
   getCapabilities,
 }
