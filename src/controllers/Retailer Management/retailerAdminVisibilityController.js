@@ -48,6 +48,41 @@ function withCompany(rows) {
   }))
 }
 
+// ── Enquiry reply roster helpers ─────────────────────────────
+// Mirror of enquiryController's shapeReply/hasReplied. A broadcast is N sibling
+// Enquiry rows (one per recipient); each recipient's row carries THAT
+// recipient's answer (price, availability, timeline, note, status). The admin
+// detail view needs the whole roster — who answered with what, and who is still
+// silent — not just the anchor row's single reply.
+function enquiryHasReplied(row) {
+  return ['Replied', 'Negotiation', 'Confirmed'].includes(row.status)
+    || !!String(row.distributor_reply || '').trim()
+    || row.offered_price != null
+    || row.available_quantity != null
+}
+
+function shapeEnquiryReply(row, companyMap) {
+  const c = row.company_id ? companyMap.get(String(row.company_id)) : null
+  return {
+    id: row._id,
+    company: c ? {
+      id: c._id,
+      name: c.name || '',
+      company_code: c.company_code || '',
+    } : { id: null, name: row.retailer_name || '—', company_code: '' },
+    status:             row.status,
+    unit:               row.unit || '',
+    qty:                row.qty,
+    offered_price:      row.offered_price ?? null,
+    available_quantity: row.available_quantity ?? null,
+    delivery_timeline:  row.delivery_timeline || '',
+    message:            row.distributor_reply || '',
+    negotiation_note:   row.negotiation_note || '',
+    remarks:            row.remarks || '',
+    responded_at:       row.updated_at || null,
+  }
+}
+
 // Retailer companies are Company docs with biz_type 'Retailer'.
 // Match case-insensitively so legacy values ("Retailers", "retailer") are not missed.
 const RETAILER_FILTER = { biz_type: /^retailers?$/i }
@@ -374,6 +409,9 @@ async function listEnquiries(req, res) {
           // Best offered price across siblings (lowest non-null), for display.
           offeredPrices: { $push: '$offered_price' },
           lastUpdated:   { $max: '$updated_at' },
+          // Every sibling row — one per recipient — so the detail view can show
+          // the full reply roster (who answered with what, who is silent).
+          siblings:      { $push: '$$ROOT' },
         },
       },
     ]
@@ -398,10 +436,15 @@ async function listEnquiries(req, res) {
     const groups = agg?.data || []
 
     // Resolve company names in one batch (aggregation can't $populate cheaply).
+    // Include every recipient sibling's company so the reply roster can name
+    // each responding wholesaler, not just the anchor.
     const idsToResolve = new Set()
     groups.forEach(g => {
       if (g.anchor.company_id)       idsToResolve.add(String(g.anchor.company_id))
       if (g.anchor.buyer_company_id) idsToResolve.add(String(g.anchor.buyer_company_id))
+      ;(g.siblings || []).forEach(s => {
+        if (s.company_id) idsToResolve.add(String(s.company_id))
+      })
     })
     const companies = await Company.find({ _id: { $in: [...idsToResolve] } })
       .select('name company_code').lean()
@@ -419,6 +462,15 @@ async function listEnquiries(req, res) {
       const prices = (g.offeredPrices || []).filter(p => p != null)
       const bestOffer = prices.length ? Math.min(...prices.map(Number)) : null
 
+      // Reply roster: split siblings into those who answered and those still
+      // silent, newest reply first, shaped like the app's /replies endpoint.
+      const siblings = (g.siblings || [])
+      const replied  = siblings.filter(enquiryHasReplied)
+        .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))
+        .map(s => shapeEnquiryReply(s, companyMap))
+      const awaiting = siblings.filter(s => !enquiryHasReplied(s))
+        .map(s => shapeEnquiryReply(s, companyMap))
+
       return {
         ...r,
         company_name: display?.name || r.retailer_name || '—',
@@ -434,6 +486,8 @@ async function listEnquiries(req, res) {
         },
         offered_price: bestOffer,
         updated_at:    g.lastUpdated || r.updated_at,
+        // Full reply roster for the detail view.
+        replies: { replied, awaiting },
       }
     })
 
