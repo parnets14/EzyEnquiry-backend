@@ -406,6 +406,7 @@ async function listEnquiries(req, res) {
           repliedCount:  { $sum: { $cond: [{ $in: ['$status', ['Replied', 'Negotiation', 'Confirmed']] }, 1, 0] } },
           viewedCount:   { $sum: { $cond: [{ $eq: ['$status', 'Viewed'] }, 1, 0] } },
           newCount:      { $sum: { $cond: [{ $eq: ['$status', 'New'] }, 1, 0] } },
+          cancelledCount:{ $sum: { $cond: [{ $eq: ['$status', 'Cancelled'] }, 1, 0] } },
           // Best offered price across siblings (lowest non-null), for display.
           offeredPrices: { $push: '$offered_price' },
           lastUpdated:   { $max: '$updated_at' },
@@ -479,10 +480,11 @@ async function listEnquiries(req, res) {
         // Broadcast rollup — one enquiry, N recipients.
         recipient_count: g.recipients,
         status_rollup: {
-          replied: g.repliedCount,
-          viewed:  g.viewedCount,
-          new:     g.newCount,
-          total:   g.recipients,
+          replied:   g.repliedCount,
+          viewed:    g.viewedCount,
+          new:       g.newCount,
+          cancelled: g.cancelledCount,
+          total:     g.recipients,
         },
         offered_price: bestOffer,
         updated_at:    g.lastUpdated || r.updated_at,
