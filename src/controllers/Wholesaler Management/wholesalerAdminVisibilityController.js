@@ -7,6 +7,7 @@
  */
 const Order       = require('../../models/Marketplace Management/Order')
 const Enquiry     = require('../../models/Marketplace Management/Enquiry')
+const Company     = require('../../models/Company Management/Company')
 const User        = require('../../models/User Management/User')
 const Transaction = require('../../models/Finance Management/Transaction')
 const Lead        = require('../../models/CRM Management/Lead')
@@ -33,6 +34,39 @@ function withCompany(rows) {
   }))
 }
 
+// ── Enquiry reply roster helpers ─────────────────────────────
+// A broadcast is N sibling Enquiry rows (one per recipient) sharing one
+// `enq_code`; each recipient's row carries THAT recipient's answer. The admin
+// view needs the whole roster — who answered with what, and who is still silent.
+function enquiryHasReplied(row) {
+  return ['Replied', 'Negotiation', 'Confirmed'].includes(row.status)
+    || !!String(row.distributor_reply || '').trim()
+    || row.offered_price != null
+    || row.available_quantity != null
+}
+
+function shapeEnquiryReply(row, companyMap) {
+  const c = row.company_id ? companyMap.get(String(row.company_id)) : null
+  return {
+    id: row._id,
+    company: c ? {
+      id: c._id,
+      name: c.name || '',
+      company_code: c.company_code || '',
+    } : { id: null, name: row.retailer_name || '—', company_code: '' },
+    status:             row.status,
+    unit:               row.unit || '',
+    qty:                row.qty,
+    offered_price:      row.offered_price ?? null,
+    available_quantity: row.available_quantity ?? null,
+    delivery_timeline:  row.delivery_timeline || '',
+    message:            row.distributor_reply || '',
+    negotiation_note:   row.negotiation_note || '',
+    remarks:            row.remarks || '',
+    responded_at:       row.updated_at || null,
+  }
+}
+
 // GET /api/wholesaler/all-orders
 async function listAllOrders(req, res) {
   if (!ensureSuperAdmin(req, res)) return
@@ -56,25 +90,116 @@ async function listAllOrders(req, res) {
 }
 
 // GET /api/wholesaler/all-enquiries
+//
+// Groups broadcast siblings (N rows sharing one enq_code) into a single enquiry
+// with a per-recipient status rollup and a reply roster, mirroring the retailer
+// admin list. Legacy single-recipient enquiries (no enq_code) group by _id.
 async function listAllEnquiries(req, res) {
   if (!ensureSuperAdmin(req, res)) return
-  const { page = 1, limit = 50, status, search } = req.query
-  const offset = (parseInt(page) - 1) * parseInt(limit)
-  const query = {}
-  if (status && status !== 'All') query.status = status
-  if (search) {
-    query.$or = [
-      { retailer_name: { $regex: search, $options: 'i' } },
-      { product_name:  { $regex: search, $options: 'i' } },
-      { enq_code:      { $regex: search, $options: 'i' } },
+  try {
+    const { page = 1, limit = 200, status, search } = req.query
+    const pageNum  = parseInt(page)
+    const limitNum = parseInt(limit)
+    const skip = (pageNum - 1) * limitNum
+
+    const match = {}
+    if (search) {
+      match.$or = [
+        { retailer_name: { $regex: search, $options: 'i' } },
+        { product_name:  { $regex: search, $options: 'i' } },
+        { enq_code:      { $regex: search, $options: 'i' } },
+      ]
+    }
+
+    const groupKey = { $ifNull: ['$enq_code', { $toString: '$_id' }] }
+
+    const pipeline = [
+      { $match: match },
+      { $sort: { created_at: -1 } },
+      {
+        $group: {
+          _id: groupKey,
+          anchor:         { $first: '$$ROOT' },
+          recipients:     { $sum: 1 },
+          statuses:       { $addToSet: '$status' },
+          repliedCount:   { $sum: { $cond: [{ $in: ['$status', ['Replied', 'Negotiation', 'Confirmed']] }, 1, 0] } },
+          viewedCount:    { $sum: { $cond: [{ $eq: ['$status', 'Viewed'] }, 1, 0] } },
+          newCount:       { $sum: { $cond: [{ $eq: ['$status', 'New'] }, 1, 0] } },
+          cancelledCount: { $sum: { $cond: [{ $eq: ['$status', 'Cancelled'] }, 1, 0] } },
+          offeredPrices:  { $push: '$offered_price' },
+          lastUpdated:    { $max: '$updated_at' },
+          siblings:       { $push: '$$ROOT' },
+        },
+      },
     ]
+
+    if (status && status !== 'All') {
+      pipeline.push({ $match: { statuses: status } })
+    }
+
+    pipeline.push(
+      { $sort: { 'anchor.created_at': -1 } },
+      {
+        $facet: {
+          meta: [{ $count: 'total' }],
+          data: [{ $skip: skip }, { $limit: limitNum }],
+        },
+      },
+    )
+
+    const [agg] = await Enquiry.aggregate(pipeline)
+    const total  = agg?.meta?.[0]?.total || 0
+    const groups = agg?.data || []
+
+    // Resolve company names in one batch.
+    const idsToResolve = new Set()
+    groups.forEach(g => {
+      if (g.anchor.company_id) idsToResolve.add(String(g.anchor.company_id))
+      ;(g.siblings || []).forEach(s => {
+        if (s.company_id) idsToResolve.add(String(s.company_id))
+      })
+    })
+    const companies = await Company.find({ _id: { $in: [...idsToResolve] } })
+      .select('name company_code').lean()
+    const companyMap = new Map(companies.map(c => [String(c._id), c]))
+
+    const enquiries = groups.map(g => {
+      const r = g.anchor
+      const co = r.company_id ? companyMap.get(String(r.company_id)) : null
+
+      const prices = (g.offeredPrices || []).filter(p => p != null)
+      const bestOffer = prices.length ? Math.min(...prices.map(Number)) : null
+
+      const siblings = (g.siblings || [])
+      const replied  = siblings.filter(enquiryHasReplied)
+        .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))
+        .map(s => shapeEnquiryReply(s, companyMap))
+      const awaiting = siblings.filter(s => !enquiryHasReplied(s))
+        .map(s => shapeEnquiryReply(s, companyMap))
+
+      return {
+        ...r,
+        company_name: co?.name || '—',
+        company_code: co?.company_code || '',
+        company_id:   co?._id || r.company_id,
+        recipient_count: g.recipients,
+        status_rollup: {
+          replied:   g.repliedCount,
+          viewed:    g.viewedCount,
+          new:       g.newCount,
+          cancelled: g.cancelledCount,
+          total:     g.recipients,
+        },
+        offered_price: bestOffer,
+        updated_at:    g.lastUpdated || r.updated_at,
+        replies: { replied, awaiting },
+      }
+    })
+
+    sendSuccess(res, { enquiries, pagination: paginate(total, pageNum, limitNum) })
+  } catch (e) {
+    sendError(res, e.message, 500)
   }
-  const [total, rows] = await Promise.all([
-    Enquiry.countDocuments(query),
-    Enquiry.find(query).populate('company_id', 'name company_code').sort({ created_at: -1 })
-      .skip(offset).limit(parseInt(limit)).lean(),
-  ])
-  sendSuccess(res, { enquiries: withCompany(rows), pagination: paginate(total, parseInt(page), parseInt(limit)) })
 }
 
 // GET /api/wholesaler/all-users  — all staff/users across companies
