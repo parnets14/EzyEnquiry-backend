@@ -163,14 +163,30 @@ async function listProducts(req, res) {
       .populate('brand_id', 'name')
       .populate('category_id', 'name')
       .populate('sub_category_id', 'name')
+      // Cross-company admin views (?all_companies=true) need the owning company
+      // name + code; the per-company view doesn't but it's cheap and harmless.
+      .populate('company_id', 'name company_code')
       .sort({ created_at: -1 })
       .skip(offset)
       .limit(parseInt(limit))
       .lean(),
   ])
 
-  console.log(`[Products] company_id=${query.company_id} total=${total} returning=${products.length} limit=${limit}`)
-  sendSuccess(res, { products, pagination: paginate(total, parseInt(page), parseInt(limit)) })
+  // Expose stable display aliases the admin tables read: `product_code` (the
+  // schema field is `code`) and a flat `company_name`/`company_code`, while
+  // keeping `company_id` as the plain id for lookups.
+  const rows = products.map(p => {
+    const co = p.company_id && typeof p.company_id === 'object' ? p.company_id : null
+    return {
+      ...p,
+      product_code: p.code || '',
+      company_name: co?.name || p.company_name || '',
+      company_code: co?.company_code || '',
+      company_id:   co?._id || p.company_id || null,
+    }
+  })
+
+  sendSuccess(res, { products: rows, pagination: paginate(total, parseInt(page), parseInt(limit)) })
 }
 
 /** GET /api/products/admin/all — Super Admin read-only cross-company catalogue */

@@ -547,6 +547,7 @@ async function getAdminProduct(req, res) {
 
   sendSuccess(res, {
     ...product,
+    product_code: product.code || '',
     company_name: product.company_id?.name || '—',
     company_code: product.company_id?.company_code || '',
   })
