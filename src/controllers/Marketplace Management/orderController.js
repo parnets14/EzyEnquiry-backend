@@ -558,7 +558,7 @@ async function updateOrder(req, res) {
 
   const {
     customer_name, customer_mobile, customer_email, delivery_address, location,
-    qty, rate, gst_percent, transport_cost, packing_cost, due_date, notes,
+    qty, rate, gst_percent, transport_cost, packing_cost, due_date, notes, terms,
     branch_id, branch_name, unit,
   } = req.body;
   const amount       = parseFloat(qty) * parseFloat(rate);
@@ -574,7 +574,7 @@ async function updateOrder(req, res) {
       location:         location         || '',
       qty, rate, amount, gst_percent: gst_percent || 18, gst_amount, total_amount,
       transport_cost: transport_cost || 0, packing_cost: packing_cost || 0,
-      due_date: due_date || null, notes: notes || '',
+      due_date: due_date || null, notes: notes || '', terms: terms || '',
       branch_id: branch_id || null, branch_name: branch_name || '',
       unit: unit || 'Pcs',
     },

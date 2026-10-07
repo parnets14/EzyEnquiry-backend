@@ -94,6 +94,7 @@ const orderSchema = new mongoose.Schema(
     packages:         [packageSchema],
     status_history:   [historySchema],
     notes:            { type: String, default: '' },
+    terms:            { type: String, default: '' },
     created_by:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     created_by_name:  { type: String, default: '' },
     // Who created/sent this (the retailer business + person + contact).
