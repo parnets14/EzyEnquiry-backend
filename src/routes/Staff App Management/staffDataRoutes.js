@@ -41,8 +41,26 @@ router.use(async (req, res, next) => {
       req.staffEmployee = {
         _id:              rs._id,
         company_id:       rs.company_id,
+        name:             rs.name,
+        mobile:           rs.mobile,
+        email:            rs.email,
+        designation:      rs.designation,
+        salary:           rs.salary_breakdown?.fixed_salary || 0,
         salary_breakdown: rs.salary_breakdown || {},
         staff_app_access: rs.staff_app_access || [],
+        assigned_products: Array.isArray(rs.assigned_products) ? rs.assigned_products : [],
+        // Normalise retailer's product_discounts → the common discount shape.
+        discount_authorizations: Array.isArray(rs.salary_breakdown?.product_discounts)
+          ? rs.salary_breakdown.product_discounts.map(d => ({
+              product_id:       d.id,
+              product_name:     d.name,
+              product_code:     d.code,
+              max_discount_pct: d.discount,
+            }))
+          : [],
+        incentive_slabs:  Array.isArray(rs.salary_breakdown?.incentive_slabs) ? rs.salary_breakdown.incentive_slabs : [],
+        sales_target:     rs.sales_target || 0,
+        org_type:         'retailer',
         _isRetailerStaff: true,
       };
       return next();
@@ -52,7 +70,7 @@ router.use(async (req, res, next) => {
     const emp = await Employee.findOne({
       company_id: req.user.company_id,
       user_id: req.user._id,
-    }).select('staff_app_access salary_breakdown salary').lean();
+    }).select('name mobile email designation department branch join_date emp_code salary salary_breakdown staff_app_access assigned_products discount_authorizations incentive_slabs sales_target org_type is_active').lean();
 
     if (emp && Array.isArray(emp.staff_app_access) && emp.staff_app_access.length > 0) {
       req.staffAppAccess = emp.staff_app_access;
@@ -101,36 +119,107 @@ router.get ('/customers',     requireModule('customers'), customerCtrl.listCusto
 router.get ('/customers/:id', requireModule('customers'), customerCtrl.getCustomer);
 router.post('/customers',     requireModule('customers'), customerCtrl.createCustomer);
 
+// ── Discount-cap enforcement for staff-created quotations ─────
+// Enforces, at the API level, that a staff member cannot give a discount
+// greater than what the admin authorised — per product first, then the flat
+// cap. Rejects the request (422) if any line exceeds the allowed limit.
+function enforceDiscountCaps(req, res, next) {
+  const emp = req.staffEmployee;
+  if (!emp) return next(); // non-staff callers unaffected
+
+  const breakdown = emp.salary_breakdown || {};
+  const flatCap   = Number(breakdown.max_discount_percent || 0);
+  const hasAccess = breakdown.discount_access !== false; // undefined → allowed
+  const perItem   = new Map(
+    (emp.discount_authorizations || []).map(d => [String(d.product_id), Number(d.max_discount_pct) || 0])
+  );
+
+  // Collect the line items from whatever shape the body uses.
+  const items = Array.isArray(req.body.items) && req.body.items.length
+    ? req.body.items
+    : [{
+        product_id: req.body.product_id || req.body.productId,
+        // Convert a flat ₹ discount to % if rate+qty present; else treat as %.
+        discount_percent: req.body.discount_percent,
+        discount: req.body.discount,
+        qty: req.body.qty || req.body.quantity,
+        rate: req.body.rate,
+      }];
+
+  for (const it of items) {
+    const pid = String(it.product_id || it.productId || '');
+    // Resolve the discount percent for this line.
+    let discPct = Number(it.discount_percent);
+    if (!Number.isFinite(discPct)) {
+      const amt  = (Number(it.qty || it.quantity) || 0) * (Number(it.rate) || 0);
+      const disc = Number(it.discount) || 0;
+      discPct = amt > 0 ? (disc / amt) * 100 : 0;
+    }
+    if (discPct <= 0) continue; // no discount → nothing to check
+
+    // The allowed cap: a per-item authorisation wins; else the flat cap.
+    const allowed = perItem.has(pid) ? perItem.get(pid) : flatCap;
+
+    if (!hasAccess || allowed <= 0) {
+      return res.status(422).json({
+        success: false,
+        message: 'You are not authorised to apply a discount on this item.',
+      });
+    }
+    if (discPct > allowed + 0.001) {
+      return res.status(422).json({
+        success: false,
+        message: `Discount exceeds your authorised limit of ${allowed}% for this item.`,
+      });
+    }
+  }
+  next();
+}
+
 // ── Quotations ───────────────────────────────────────────────
 router.get ('/quotations',     requireModule('quotations'), quotationCtrl.listQuotations);
 router.get ('/quotations/:id', requireModule('quotations'), quotationCtrl.getQuotation);
-router.post('/quotations',     requireModule('quotations'), quotationCtrl.createQuotation);
+router.post('/quotations',     requireModule('quotations'), enforceDiscountCaps, quotationCtrl.createQuotation);
 
-// ── Products (catalog — read-only search) ─────────────────────
-// Returns all active, non-deleted products with full brand/category population.
-// No company filter — staff can see all products to create quotations.
+// ── Products (catalog — read-only, STRICT assigned-items allow-list) ──
+// A staff member sees ONLY the products the admin assigned to them
+// (`assigned_products`). If none are assigned, they see NOTHING.
+// This is enforced here at the API level, not just hidden in the app.
 router.get('/products', requireModule('products'), async (req, res) => {
   try {
     const Product  = require('../../models/Product Management/Product');
-    const { paginate } = require('../../utils/helpers');
 
     const { search = '', page = 1, limit = 500 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    // No company_id filter — return all active products so staff can browse
-    // the full catalogue regardless of which company created each product.
+    const assigned = Array.isArray(req.staffEmployee?.assigned_products)
+      ? req.staffEmployee.assigned_products
+      : [];
+
+    // No assigned items = no access = empty catalogue (strict).
+    if (!assigned.length) {
+      return res.json({
+        success: true,
+        data: { products: [], total: 0, page: parseInt(page), pages: 0 },
+      });
+    }
+
+    // Only the explicitly-assigned products, and only if still active.
     const query = {
+      _id:       { $in: assigned },
       is_active: { $ne: false },
       status:    { $ne: 'deleted' },
     };
 
     if (search) {
       const regex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      query.$or = [
-        { name: regex }, { code: regex }, { alias: regex },
-        { size: regex }, { finish: regex }, { color: regex },
-        { design: regex }, { collection: regex },
-      ];
+      query.$and = [{
+        $or: [
+          { name: regex }, { code: regex }, { alias: regex },
+          { size: regex }, { finish: regex }, { color: regex },
+          { design: regex }, { collection: regex },
+        ],
+      }];
     }
 
     const [total, products] = await Promise.all([
@@ -177,21 +266,14 @@ router.get('/products', requireModule('products'), async (req, res) => {
       };
     });
 
-    console.log(`[Staff Products] company=${req.user.company_id} total_all=${total} returning=${withStock.length}`);
-    // Debug: log each product's company biz_type + created_by_type so mismatches are visible
-    withStock.forEach(p => {
-      const cName     = p.company_id?.name     || '(no name)';
-      const cBizType  = p.company_id?.biz_type || '(no biz_type)';
-      const createdBy = p.created_by_type      || '(none)';
-      console.log(`  [Product] "${p.name}" | company="${cName}" biz_type="${cBizType}" created_by_type="${createdBy}"`);
-    });
-
     res.json({
       success: true,
       message: 'Products retrieved.',
       data: {
         products: withStock,
-        pagination: paginate(total, parseInt(page), parseInt(limit)),
+        total,
+        page:  parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
       },
     });
   } catch (err) {
@@ -314,7 +396,15 @@ router.get('/my-profile', async (req, res) => {
     res.json({
       success: true,
       data: {
-        employee_id:      emp._id,
+        employee_id:  emp._id,
+        name:         emp.name || '',
+        mobile:       emp.mobile || '',
+        email:        emp.email || '',
+        designation:  emp.designation || '',
+        department:   emp.department || '',
+        branch:       emp.branch || '',
+        org_type:     emp.org_type || 'admin',
+        sales_target: emp.sales_target || 0,
         salary_breakdown: {
           fixed_salary:         breakdown.fixed_salary         ?? emp.salary ?? 0,
           incentive_type:       breakdown.incentive_type       ?? 'none',
@@ -324,11 +414,89 @@ router.get('/my-profile', async (req, res) => {
           max_discount_percent: breakdown.max_discount_percent ?? 0,
           notes:                breakdown.notes                ?? '',
         },
-        staff_app_access: emp.staff_app_access || [],
+        incentive_slabs:         Array.isArray(emp.incentive_slabs) ? emp.incentive_slabs : [],
+        discount_authorizations: Array.isArray(emp.discount_authorizations) ? emp.discount_authorizations : [],
+        assigned_product_count:  Array.isArray(emp.assigned_products) ? emp.assigned_products.length : 0,
+        staff_app_access:        emp.staff_app_access || [],
       },
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message || 'Failed to load profile.' });
+  }
+});
+
+// ── My Discount Permissions (item-wise max discount %) ───────
+// Returns the per-product discount caps the admin granted this staff member,
+// plus the flat fallback cap. The app shows these read-only and enforces them.
+router.get('/my-discounts', async (req, res) => {
+  try {
+    const emp = req.staffEmployee;
+    if (!emp) {
+      return res.status(404).json({ success: false, message: 'Employee record not found for your account.' });
+    }
+    const breakdown = emp.salary_breakdown || {};
+    res.json({
+      success: true,
+      data: {
+        discount_access:         breakdown.discount_access ?? false,
+        max_discount_percent:    breakdown.max_discount_percent ?? 0,
+        discount_authorizations: Array.isArray(emp.discount_authorizations) ? emp.discount_authorizations : [],
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to load discount permissions.' });
+  }
+});
+
+// ── My Sales & Incentive (live computed for the current month) ──
+// Monthly target vs completed, remaining, incentive % + earned, salary,
+// and expected total (salary + incentive).
+router.get('/my-sales', async (req, res) => {
+  try {
+    const emp = req.staffEmployee;
+    if (!emp) {
+      return res.status(404).json({ success: false, message: 'Employee record not found for your account.' });
+    }
+
+    const { computeStaffIncentive } = require('../../controllers/HR Management/employeeController');
+    const breakdown  = emp.salary_breakdown || {};
+    const salary     = breakdown.fixed_salary ?? emp.salary ?? 0;
+    const target     = emp.sales_target || 0;
+    const slabs      = Array.isArray(emp.incentive_slabs) ? emp.incentive_slabs : [];
+
+    // For HR Employee staff, sales are attributed to their linked User id.
+    // RetailerStaff have no linked User, so monthSales falls back to 0.
+    const userId  = emp._isRetailerStaff ? null : (req.user?._id || null);
+    const summary = await computeStaffIncentive(req.user.company_id, userId, slabs);
+
+    const completed = summary.monthSales || 0;
+    const remaining = Math.max(0, target - completed);
+
+    // Incentive: prefer slab result; else apply flat sales_percentage.
+    let incentivePct    = summary.pct || 0;
+    let incentiveAmount = summary.amount || 0;
+    if (!incentivePct && breakdown.sales_percentage) {
+      incentivePct    = breakdown.sales_percentage;
+      incentiveAmount = Math.round((completed * incentivePct) / 100 * 100) / 100;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        period:            summary.periodLabel,
+        sales_target:      target,
+        sales_completed:   completed,
+        sales_remaining:   remaining,
+        target_percent:    target > 0 ? Math.min(100, Math.round((completed / target) * 100)) : 0,
+        incentive_percent: incentivePct,
+        incentive_earned:  incentiveAmount,
+        salary,
+        expected_total:    Math.round((salary + incentiveAmount) * 100) / 100,
+        slabs,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to load sales summary.' });
   }
 });
 

@@ -10,8 +10,62 @@
 
 const Employee = require('../../models/HR Management/Employee');
 const User     = require('../../models/User Management/User');
+const Company  = require('../../models/Company Management/Company');
 const { STAFF_APP_MODULES } = require('../../models/HR Management/Employee');
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
+
+/** Map a company's biz_type to the staff org_type enum. */
+function orgTypeFromBizType(bizType) {
+  const t = String(bizType || '').toLowerCase();
+  if (t.includes('retail'))    return 'retailer';
+  if (t.includes('wholesale')) return 'wholesaler';
+  return 'admin';
+}
+
+/** Parse the assigned-products allow-list (array of product ids). */
+function parseAssignedProducts(raw) {
+  if (raw === undefined || raw === null) return undefined; // not supplied → leave unchanged
+  const arr = Array.isArray(raw)
+    ? raw
+    : String(raw).split(',').map(s => s.trim()).filter(Boolean);
+  // Keep only valid 24-char ObjectId-looking strings.
+  return [...new Set(arr.map(String).filter(id => /^[a-fA-F0-9]{24}$/.test(id)))];
+}
+
+/** Parse incentive slabs: [{ sales_amount, incentive_pct }], sorted ascending. */
+function parseIncentiveSlabs(raw) {
+  if (raw === undefined || raw === null) return undefined; // not supplied → leave unchanged
+  let arr = raw;
+  if (typeof raw === 'string') {
+    try { arr = JSON.parse(raw); } catch { arr = []; }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map(s => ({
+      sales_amount:  Math.max(0, Number(s.sales_amount) || 0),
+      incentive_pct: Math.min(100, Math.max(0, Number(s.incentive_pct) || 0)),
+    }))
+    .filter(s => s.sales_amount > 0 || s.incentive_pct > 0)
+    .sort((a, b) => a.sales_amount - b.sales_amount);
+}
+
+/** Parse per-item discount authorisations: [{ product_id, product_name, product_code, max_discount_pct }]. */
+function parseDiscountAuthorizations(raw) {
+  if (raw === undefined || raw === null) return undefined; // not supplied → leave unchanged
+  let arr = raw;
+  if (typeof raw === 'string') {
+    try { arr = JSON.parse(raw); } catch { arr = []; }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter(d => d && /^[a-fA-F0-9]{24}$/.test(String(d.product_id || d.id || '')))
+    .map(d => ({
+      product_id:       String(d.product_id || d.id),
+      product_name:     String(d.product_name || d.name || ''),
+      product_code:     String(d.product_code || d.code || ''),
+      max_discount_pct: Math.min(100, Math.max(0, Number(d.max_discount_pct ?? d.discount) || 0)),
+    }));
+}
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -174,20 +228,37 @@ async function addStaff(req, res) {
   // ── Salary breakdown ────────────────────────────────────────
   const salaryBd = parseSalaryBreakdown(req.body);
 
+  // ── Assigned items + discount authorisations + slabs + sales target ──
+  const assignedProducts = parseAssignedProducts(req.body.assigned_products);
+  const discountAuths     = parseDiscountAuthorizations(req.body.discount_authorizations);
+  const incentiveSlabs    = parseIncentiveSlabs(req.body.incentive_slabs);
+  const salesTarget       = req.body.sales_target !== undefined
+    ? Math.max(0, Number(req.body.sales_target) || 0)
+    : 0;
+
+  // ── Resolve org_type from the owning company ────────────────
+  const company = await Company.findById(req.user.company_id).select('biz_type').lean();
+  const orgType = orgTypeFromBizType(company?.biz_type);
+
   // ── Create ──────────────────────────────────────────────────
   const emp = await Employee.create({
-    company_id:       req.user.company_id,
-    name:             String(name).trim(),
-    mobile:           digits,
-    email:            email ? String(email).toLowerCase().trim() : '',
-    emp_code:         req.body.emp_code    || '',
-    designation:      req.body.designation || '',
-    department:       req.body.department  || '',
-    branch:           req.body.branch      || '',
-    join_date:        req.body.join_date   || null,
-    salary:           salaryBd.fixed_salary ?? 0,
-    salary_breakdown: salaryBd,
-    staff_app_access: modules,
+    company_id:        req.user.company_id,
+    name:              String(name).trim(),
+    mobile:            digits,
+    email:             email ? String(email).toLowerCase().trim() : '',
+    emp_code:          req.body.emp_code    || '',
+    designation:       req.body.designation || '',
+    department:        req.body.department  || '',
+    branch:            req.body.branch      || '',
+    join_date:         req.body.join_date   || null,
+    salary:            salaryBd.fixed_salary ?? 0,
+    salary_breakdown:  salaryBd,
+    staff_app_access:  modules,
+    assigned_products: assignedProducts || [],
+    discount_authorizations: discountAuths || [],
+    incentive_slabs:   incentiveSlabs || [],
+    sales_target:      salesTarget,
+    org_type:          orgType,
   });
 
   sendSuccess(res, { staff: emp }, 'Staff member added successfully.', 201);
@@ -248,9 +319,24 @@ async function updateStaff(req, res) {
   const salaryBd = parseSalaryBreakdown(req.body);
   if (Object.keys(salaryBd).length) {
     // salary_breakdown is a sub-doc; merge field by field
+    if (!emp.salary_breakdown) emp.salary_breakdown = {};
     Object.assign(emp.salary_breakdown, salaryBd);
     // Keep legacy flat salary in sync
     if (salaryBd.fixed_salary !== undefined) emp.salary = salaryBd.fixed_salary;
+  }
+
+  // ── Assigned items + discount authorisations + sales target ──
+  const assignedProducts = parseAssignedProducts(req.body.assigned_products);
+  if (assignedProducts !== undefined) emp.assigned_products = assignedProducts;
+
+  const discountAuths = parseDiscountAuthorizations(req.body.discount_authorizations);
+  if (discountAuths !== undefined) emp.discount_authorizations = discountAuths;
+
+  const incentiveSlabs = parseIncentiveSlabs(req.body.incentive_slabs);
+  if (incentiveSlabs !== undefined) emp.incentive_slabs = incentiveSlabs;
+
+  if (req.body.sales_target !== undefined) {
+    emp.sales_target = Math.max(0, Number(req.body.sales_target) || 0);
   }
 
   await emp.save();
