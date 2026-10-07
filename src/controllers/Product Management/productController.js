@@ -15,6 +15,31 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+// Resolve who created a product — mirrors the CRM Product Management
+// "ADDED BY" badge logic (creatorTypeOf in ProductManagement.jsx) so backend
+// filters stay in sync with what the UI displays.
+// Returns one of: 'Admin' | 'Wholesaler' | 'Retailer' | 'Unknown'.
+function resolveProductCreatorType(product = {}) {
+  if (product.created_by_type) return product.created_by_type
+
+  const creatorRole = String(product.created_by?.role || '').toLowerCase()
+  if (creatorRole.includes('retail')) return 'Retailer'
+  if (creatorRole.includes('whole'))  return 'Wholesaler'
+  if (creatorRole.includes('admin'))  return 'Admin'
+
+  const companyType = String(product.company_id?.biz_type || '').toLowerCase()
+  if (companyType.includes('retail')) return 'Retailer'
+  if (companyType.includes('whole'))  return 'Wholesaler'
+
+  // RPD is a reliable RetailerApp legacy prefix. PRD is shared by Admin and
+  // Wholesaler flows, so it must never be used to infer Admin.
+  if (String(product.code || '').toUpperCase().startsWith('RPD-')) return 'Retailer'
+
+  // Legacy fallback: products explicitly sourced from admin.
+  if (String(product.source || '').toLowerCase() === 'admin') return 'Admin'
+  return 'Unknown'
+}
+
 function productScope(req, extra = {}) {
   return req.user?.role === 'Super Admin'
     ? { ...extra }
@@ -696,31 +721,35 @@ async function productsForSelect(req, res) {
       if (!req.user?.company_id) return sendSuccess(res, { products: [] })
       query.company_id = req.user.company_id
     }
-    if (adminOnly) {
-      // Admin-added products are flagged either by created_by_type 'Admin'
-      // or by the legacy source 'admin'. Match either for backward compat.
-      query.$and = [{ $or: [{ created_by_type: 'Admin' }, { source: 'admin' }] }]
-    }
     if (search) {
       const rx = new RegExp(escapeRegex(search), 'i')
       query.$or = [{ name: rx }, { code: rx }]
     }
 
     const products = await Product.find(query)
-      .select('name code unit gst_percent mrp retail_price dealer_price purchase_price pcs_per_box sqft_per_box brand_name category_name sub_category_name size finish tile_type grade color hsn_code image_urls is_active company_id created_by_type source')
+      .select('name code unit gst_percent mrp retail_price dealer_price purchase_price pcs_per_box sqft_per_box brand_name category_name sub_category_name size finish tile_type grade color hsn_code image_urls is_active company_id created_by_type source created_by')
       .populate('brand_id',        'name')
       .populate('category_id',     'name')
       .populate('sub_category_id', 'name')
+      .populate('company_id',      'name biz_type company_code')
+      .populate('created_by',      'name role')
       .sort({ name: 1 })
       .limit(limit)
       .lean()
 
-    const shaped = products.map(p => ({
+    let shaped = products.map(p => ({
       ...p,
       brand_name:        p.brand_name        || p.brand_id?.name        || '',
       category_name:     p.category_name     || p.category_id?.name     || '',
       sub_category_name: p.sub_category_name || p.sub_category_id?.name || '',
     }))
+
+    // When admin_only=true, keep only products whose resolved creator is Admin.
+    // This mirrors the CRM Product Management "ADDED BY" badge logic so the
+    // quotation/invoice dropdowns show exactly the same admin-added products.
+    if (adminOnly) {
+      shaped = shaped.filter(p => resolveProductCreatorType(p) === 'Admin')
+    }
 
     sendSuccess(res, { products: shaped })
   } catch (err) {
