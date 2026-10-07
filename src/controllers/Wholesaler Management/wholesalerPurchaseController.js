@@ -199,7 +199,12 @@ async function listAllPurchases(req, res) {
   const { page = 1, limit = 50, search } = req.query
   const offset = (parseInt(page) - 1) * parseInt(limit)
 
-  const query = {}
+  // Scope to wholesaler companies only (biz_type stems from "wholesale"), so the
+  // admin's Wholesaler hub never shows retailer/admin purchases or orphan rows
+  // whose company_id is null (which rendered as a blank "—" company).
+  const wholesalerIds = await Company.find({ biz_type: /wholesale/i }).distinct('_id')
+
+  const query = { company_id: { $in: wholesalerIds } }
   if (search) {
     query.$or = [
       { supplier_name: { $regex: search, $options: 'i' } },

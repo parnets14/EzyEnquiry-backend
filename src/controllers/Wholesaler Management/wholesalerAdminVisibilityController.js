@@ -25,6 +25,21 @@ function ensureSuperAdmin(req, res) {
   return true
 }
 
+// Wholesaler companies are Company docs whose biz_type stems from "wholesale".
+// `biz_type` is free text (entered at signup), so match the STEM case-
+// insensitively — "Wholesaler", "Wholesalers", and the production typo
+// "Wholesale" (no trailing r) all count. This mirrors RETAILER_FILTER on the
+// retailer side.
+const WHOLESALER_FILTER = { biz_type: /wholesale/i }
+
+// Resolve the set of wholesaler company ids once per request. Every cross-
+// company list below is scoped to these ids so the Wholesaler hub shows ONLY
+// wholesaler data — and rows whose company_id is null/not-a-wholesaler (which
+// used to render as a blank "—" company) are excluded.
+async function wholesalerCompanyIds() {
+  return Company.find(WHOLESALER_FILTER).distinct('_id')
+}
+
 function withCompany(rows) {
   return rows.map(r => ({
     ...r,
@@ -72,7 +87,7 @@ async function listAllOrders(req, res) {
   if (!ensureSuperAdmin(req, res)) return
   const { page = 1, limit = 50, status, search } = req.query
   const offset = (parseInt(page) - 1) * parseInt(limit)
-  const query = {}
+  const query = { company_id: { $in: await wholesalerCompanyIds() } }
   if (status && status !== 'All') query.status = status
   if (search) {
     query.$or = [
@@ -102,7 +117,7 @@ async function listAllEnquiries(req, res) {
     const limitNum = parseInt(limit)
     const skip = (pageNum - 1) * limitNum
 
-    const match = {}
+    const match = { company_id: { $in: await wholesalerCompanyIds() } }
     if (search) {
       match.$or = [
         { retailer_name: { $regex: search, $options: 'i' } },
@@ -207,7 +222,7 @@ async function listAllUsers(req, res) {
   if (!ensureSuperAdmin(req, res)) return
   const { page = 1, limit = 50, search, role } = req.query
   const offset = (parseInt(page) - 1) * parseInt(limit)
-  const query = {}
+  const query = { company_id: { $in: await wholesalerCompanyIds() } }
   if (role) query.role = role
   if (search) {
     query.$or = [
@@ -230,7 +245,8 @@ async function listAllTransactions(req, res) {
   if (!ensureSuperAdmin(req, res)) return
   const { page = 1, limit = 50, type, search } = req.query
   const offset = (parseInt(page) - 1) * parseInt(limit)
-  const query = {}
+  const wsIds = await wholesalerCompanyIds()
+  const query = { company_id: { $in: wsIds } }
   if (type) query.type = type
   if (search) {
     query.$or = [
@@ -244,6 +260,7 @@ async function listAllTransactions(req, res) {
     Transaction.find(query).populate('company_id', 'name company_code').sort({ txn_date: -1 })
       .skip(offset).limit(parseInt(limit)).lean(),
     Transaction.aggregate([
+      { $match: { company_id: { $in: wsIds } } },
       { $group: { _id: '$type', total: { $sum: '$amount' } } },
     ]),
   ])
@@ -260,7 +277,7 @@ async function listAllLeads(req, res) {
   if (!ensureSuperAdmin(req, res)) return
   const { page = 1, limit = 50, status, search } = req.query
   const offset = (parseInt(page) - 1) * parseInt(limit)
-  const query = {}
+  const query = { company_id: { $in: await wholesalerCompanyIds() } }
   if (status && status !== 'All') query.status = status
   if (search) {
     query.$or = [
@@ -283,7 +300,7 @@ async function listAllFollowups(req, res) {
   if (!ensureSuperAdmin(req, res)) return
   const { page = 1, limit = 50, status, search } = req.query
   const offset = (parseInt(page) - 1) * parseInt(limit)
-  const query = {}
+  const query = { company_id: { $in: await wholesalerCompanyIds() } }
   if (status && status !== 'All') query.status = status
   if (search) {
     query.$or = [
@@ -315,7 +332,7 @@ async function listAllCustomers(req, res) {
   if (!ensureSuperAdmin(req, res)) return
   const { page = 1, limit = 50, search } = req.query
   const offset = (parseInt(page) - 1) * parseInt(limit)
-  const query = {}
+  const query = { company_id: { $in: await wholesalerCompanyIds() } }
   if (search) {
     query.$or = [
       { name:       { $regex: search, $options: 'i' } },
