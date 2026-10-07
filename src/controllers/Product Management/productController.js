@@ -685,6 +685,10 @@ async function productsForSelect(req, res) {
     const limit  = Math.min(parseInt(req.query.limit, 10) || 500, 1000)
     const search = String(req.query.search || '').trim()
     const isSuperAdmin = req.user?.role === 'Super Admin'
+    // When admin_only=true, only return products that were added by an Admin
+    // (used by the quotation/invoice dropdowns so they show admin catalogue
+    // items only, not wholesaler/retailer-added products).
+    const adminOnly = String(req.query.admin_only || '') === 'true'
 
     const query = { status: { $ne: 'deleted' } }
     // Scope to company unless Super Admin
@@ -692,13 +696,18 @@ async function productsForSelect(req, res) {
       if (!req.user?.company_id) return sendSuccess(res, { products: [] })
       query.company_id = req.user.company_id
     }
+    if (adminOnly) {
+      // Admin-added products are flagged either by created_by_type 'Admin'
+      // or by the legacy source 'admin'. Match either for backward compat.
+      query.$and = [{ $or: [{ created_by_type: 'Admin' }, { source: 'admin' }] }]
+    }
     if (search) {
       const rx = new RegExp(escapeRegex(search), 'i')
       query.$or = [{ name: rx }, { code: rx }]
     }
 
     const products = await Product.find(query)
-      .select('name code unit gst_percent mrp retail_price dealer_price purchase_price pcs_per_box sqft_per_box brand_name category_name sub_category_name size finish tile_type grade color hsn_code image_urls is_active company_id')
+      .select('name code unit gst_percent mrp retail_price dealer_price purchase_price pcs_per_box sqft_per_box brand_name category_name sub_category_name size finish tile_type grade color hsn_code image_urls is_active company_id created_by_type source')
       .populate('brand_id',        'name')
       .populate('category_id',     'name')
       .populate('sub_category_id', 'name')
