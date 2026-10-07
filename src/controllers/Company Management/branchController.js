@@ -1,4 +1,4 @@
-const { sendSuccess, sendError } = require('../../utils/helpers')
+const { sendSuccess, sendError, paginate } = require('../../utils/helpers')
 const Branch = require('../../models/Company Management/Branch')
 
 // Routes are mounted under /api/companies/:companyId/branches

@@ -64,8 +64,18 @@ async function cancelSubscription(req, res) {
 async function listAllSubscriptions(req, res) {
   if (req.user.role !== 'Super Admin') return sendError(res, 'Access denied. Super Admin only.', 403)
 
-  const companies = await Company.find({})
-    .select('name company_code subscription_plan enquiry_limit enquiries_used plan_expires_at status')
+  // Optional ?biz_type=Retailer|Wholesaler — scopes the list to one app's
+  // companies. `biz_type` is free text (entered at signup), so match on the
+  // STEM case-insensitively: "Retailer"/"Retailers"/"retailer" all count, and
+  // "Wholesaler"/"Wholesale" all count. Omitting the param returns every
+  // company (used by the global System → Subscription page).
+  const companyQuery = {}
+  const bizType = String(req.query.biz_type || '').trim().toLowerCase()
+  if (bizType.startsWith('retail'))   companyQuery.biz_type = /^retailers?$/i
+  else if (bizType.startsWith('whole')) companyQuery.biz_type = /wholesale/i
+
+  const companies = await Company.find(companyQuery)
+    .select('name company_code biz_type subscription_plan enquiry_limit enquiries_used plan_expires_at status')
     .sort({ created_at: -1 }).lean()
 
   // Latest subscription per company for amount/expiry display
@@ -82,6 +92,7 @@ async function listAllSubscriptions(req, res) {
       company_id:      c._id,
       company_name:    c.name,
       company_code:    c.company_code || '',
+      biz_type:        c.biz_type || '',
       status:          c.status,
       plan:            c.subscription_plan || 'Free',
       enquiry_limit:   c.enquiry_limit || 0,

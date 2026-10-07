@@ -1,10 +1,46 @@
-const { sendSuccess, sendError } = require('../../utils/helpers');
+const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
 const Supplier = require('../../models/Purchase & Inventory Management/Supplier');
 
-/** GET /api/suppliers */
+/**
+ * GET /api/suppliers
+ *
+ * Supports optional pagination + search:
+ *   ?page=1&limit=20&search=kajaria
+ *
+ * Back-compatible: when NO pagination params are sent the full supplier list is
+ * returned as a bare array (the shape existing callers already expect). When
+ * `page` or `limit` is supplied the response becomes
+ * `{ suppliers, pagination }`, matching the canonical paginated controllers.
+ */
 async function listSuppliers(req, res) {
-  const suppliers = await Supplier.find({ company_id: req.user.company_id }).sort({ name: 1 }).lean();
-  sendSuccess(res, suppliers);
+  const { search } = req.query;
+  const wantsPaged = req.query.page !== undefined || req.query.limit !== undefined;
+
+  const query = { company_id: req.user.company_id };
+  if (search) {
+    query.$or = [
+      { name:       { $regex: search, $options: 'i' } },
+      { mobile:     { $regex: search, $options: 'i' } },
+      { city:       { $regex: search, $options: 'i' } },
+      { gst_number: { $regex: search, $options: 'i' } },
+    ];
+  }
+
+  if (!wantsPaged) {
+    const suppliers = await Supplier.find(query).sort({ name: 1 }).lean();
+    return sendSuccess(res, suppliers);
+  }
+
+  const page   = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit  = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 500);
+  const offset = (page - 1) * limit;
+
+  const [total, suppliers] = await Promise.all([
+    Supplier.countDocuments(query),
+    Supplier.find(query).sort({ name: 1 }).skip(offset).limit(limit).lean(),
+  ]);
+
+  sendSuccess(res, { suppliers, pagination: paginate(total, page, limit) });
 }
 
 /** GET /api/suppliers/:id */
