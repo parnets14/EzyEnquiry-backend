@@ -10,6 +10,7 @@ const Company      = require('../../models/Company Management/Company');
 const User         = require('../../models/User Management/User');
 const Inventory    = require('../../models/Purchase & Inventory Management/Inventory');
 const StockMovement = require('../../models/Purchase & Inventory Management/StockMovement');
+const Employee     = require('../../models/HR Management/Employee');
 const { deductStockForOrder, restoreStockForOrder, reserveStockForOrder, releaseReserveForOrder, checkAndNotifyStockLevels } = require('../Purchase & Inventory Management/inventoryController');
 const { notifyRetailer } = require('../../utils/pushHelper');
 
@@ -978,22 +979,43 @@ async function assignOrder(req, res) {
     return sendError(res, 'Invalid staff_id format.', 400);
   }
 
-  // Find the user by _id within the same company.
+  // The id may be either a User id (staff with a login) or an Employee id
+  // (HR staff without a login). Resolve both so assignment works for either.
+  //   - assignUserId: User._id used for notifications (null if no login)
+  //   - assignName:   display name shown on the order
+  let assignUserId = null;
+  let assignName   = '';
+
+  // 1. Try as a User in this company.
   const staffUser = await User.findOne({
     _id:        resolvedStaffId,
     company_id: req.user.company_id,
     is_active:  true,
   }).select('name role').lean();
 
-  if (!staffUser) {
-    return sendError(res, 'User not found or does not belong to this company.', 404);
+  if (staffUser) {
+    assignUserId = resolvedStaffId;
+    assignName   = staffUser.name;
+  } else {
+    // 2. Try as an Employee in this company (staff = employee model).
+    const emp = await Employee.findOne({
+      _id:        resolvedStaffId,
+      company_id: req.user.company_id,
+    }).select('name user_id is_active').lean();
+
+    if (!emp || emp.is_active === false) {
+      return sendError(res, 'Staff member not found or does not belong to this company.', 404);
+    }
+    assignName   = emp.name;
+    // Use the employee's linked login (if any) as the notification target.
+    assignUserId = emp.user_id ? String(emp.user_id._id || emp.user_id) : null;
   }
 
   const order = await Order.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },
     {
-      assigned_to:      resolvedStaffId,
-      assigned_to_name: staffUser.name,
+      assigned_to:      assignUserId,
+      assigned_to_name: assignName,
       assigned_date:    new Date(),
       assignment_type:  'MANUAL',
     },
@@ -1004,17 +1026,19 @@ async function assignOrder(req, res) {
     return sendError(res, 'Order not found.', 404);
   }
 
-  // Notify the assigned staff member.
-  await Notification.create({
-    company_id:   req.user.company_id,
-    user_id:      resolvedStaffId,
-    type:         'order',
-    title:        `Order ${order.order_code} Assigned`,
-    message:      `You have been assigned to order ${order.order_code} for ${order.customer_name}`,
-    reference_id: order._id,
-  }).catch(() => {});
+  // Notify the assigned staff member only if they have a login account.
+  if (assignUserId) {
+    await Notification.create({
+      company_id:   req.user.company_id,
+      user_id:      assignUserId,
+      type:         'order',
+      title:        `Order ${order.order_code} Assigned`,
+      message:      `You have been assigned to order ${order.order_code} for ${order.customer_name}`,
+      reference_id: order._id,
+    }).catch(() => {});
+  }
 
-  sendSuccess(res, order, `Order assigned to ${staffUser.name}`);
+  sendSuccess(res, order, `Order assigned to ${assignName}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
