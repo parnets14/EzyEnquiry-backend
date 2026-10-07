@@ -92,6 +92,41 @@ const employeeSchema = new mongoose.Schema(
       ],
       default: [],
     },
+
+    // ── Staff App module access ────────────────────────────────
+    // Which Staff App modules this employee can see. EMPTY = no modules
+    // (strict). Values must be from STAFF_APP_MODULES.
+    // NOTE: previously missing from the schema, so admin-assigned access was
+    // silently dropped by Mongoose strict mode. Declared here so it persists.
+    staff_app_access: {
+      type: [{ type: String, enum: STAFF_APP_MODULES }],
+      default: [],
+    },
+
+    // ── Salary / incentive / discount structure ────────────────
+    // Previously missing from the schema (silently dropped). Declared now.
+    salary_breakdown: { type: salaryBreakdownSchema, default: () => ({}) },
+
+    // Monthly sales target (₹). Drives the "remaining sales" and incentive
+    // progress shown in the Staff App.
+    sales_target: { type: Number, default: 0, min: 0 },
+
+    // Organisation type this staff belongs to. Used to keep staff teams
+    // completely separated (Admin / Wholesaler / Retailer). Defaults are
+    // resolved from the owning Company's biz_type at creation time.
+    org_type: {
+      type: String,
+      enum: ['admin', 'wholesaler', 'retailer'],
+      default: 'admin',
+    },
+
+    // ── Assigned item allow-list (STRICT) ──────────────────────
+    // The ONLY products this staff member may see/sell in the Staff App.
+    // If empty, the staff member sees NO products (no access = nothing shown).
+    assigned_products: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+      default: [],
+    },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

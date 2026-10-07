@@ -143,6 +143,20 @@ const retailerStaffSchema = new mongoose.Schema(
     // Salary structure
     salary_breakdown: { type: salaryBreakdownSchema, default: () => ({}) },
 
+    // Monthly sales target (₹) — drives the Staff App sales/incentive progress.
+    sales_target: { type: Number, default: 0, min: 0 },
+
+    // Organisation type — always 'retailer' for records in this collection.
+    org_type: { type: String, enum: ['admin', 'wholesaler', 'retailer'], default: 'retailer' },
+
+    // ── Assigned item allow-list (STRICT) ──────────────────────
+    // The ONLY products this retailer staff member may see/sell.
+    // If empty, the staff member sees NO products.
+    assigned_products: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+      default: [],
+    },
+
     is_active: { type: Boolean, default: true },
 
     // OTP login support — reuses the existing OTP utility
