@@ -111,6 +111,10 @@ const orderSchema = new mongoose.Schema(
     // True once this order's quantity has been deducted from inventory (at
     // booking time). Prevents the dispatch flow from deducting again.
     stock_deducted:   { type: Boolean, default: false },
+    // True once this order's quantity has been moved Available → Reserved
+    // (at Accept time). Acceptance is allowed even when this fails, so this
+    // flag tells the cancel flow whether there is a reservation to release.
+    stock_reserved:   { type: Boolean, default: false },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 );

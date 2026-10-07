@@ -408,10 +408,13 @@ async function updateOrderStatus(req, res) {
     return sendError(res, `Cannot transition from "${order.status}" to "${status}". Allowed: ${allowed.join(', ') || 'none'}`, 422);
   }
 
-  // ── PRE-COMMIT: Reserve stock BEFORE accepting an order ─────────────────
+  // ── Reserve stock BEFORE accepting an order ─────────────────────────────
   // Workflow Decision Point #1: Available → Reserved = on Order Accepted.
-  // If stock is insufficient, REJECT the transition and return 422.
+  // Policy: acceptance is NO LONGER blocked when stock is missing/insufficient.
+  // We still reserve whatever stock exists; if reservation can't be done, we
+  // accept the order anyway and record a note so it's visible in the history.
   let reserveResult = null;
+  let reserveWarning = '';
   if (order.status === 'New' && status === 'Accepted') {
     reserveResult = await reserveStockForOrder({
       companyId:   req.user.company_id,
@@ -423,8 +426,9 @@ async function updateOrderStatus(req, res) {
       userId:      req.user._id,
     });
     if (!reserveResult.ok) {
-      const msg = reserveResult.error || 'Could not reserve stock for this order.';
-      return sendError(res, `Order could not be accepted — ${msg}`, 422);
+      // Non-blocking: proceed with acceptance, but flag that stock wasn't reserved.
+      reserveWarning = reserveResult.error || 'stock not reserved';
+      console.warn(`[updateOrderStatus] accepting order ${order.order_code} without reservation — ${reserveWarning}`);
     }
   }
 
@@ -437,12 +441,15 @@ async function updateOrderStatus(req, res) {
     'Cancelled':       'Order cancelled',
   };
 
+  const baseRemark = remarks || STAGE_REMARKS[status] || '';
   const histEntry = {
     status,
     updated_by:      req.user._id,
     updated_by_name: req.user.name || '',
     updated_by_role: req.user.role || '',
-    remarks:         remarks || STAGE_REMARKS[status] || '',
+    remarks:         reserveWarning
+      ? `${baseRemark} (stock not reserved — ${reserveWarning})`.trim()
+      : baseRemark,
     timestamp:       new Date(),
   };
 
@@ -451,6 +458,11 @@ async function updateOrderStatus(req, res) {
   const histUpdate = (lastEntry && lastEntry.status === status)
     ? { status }
     : { status, $push: { status_history: histEntry } };
+  // Record whether stock was actually reserved on this Accept, so the cancel
+  // flow knows if there is a reservation to release.
+  if (order.status === 'New' && status === 'Accepted') {
+    histUpdate.stock_reserved = !!(reserveResult && reserveResult.ok);
+  }
 
   let updated = await Order.findOneAndUpdate(
     { _id: req.params.id, company_id: req.user.company_id },
@@ -467,8 +479,10 @@ async function updateOrderStatus(req, res) {
         await Order.findByIdAndUpdate(req.params.id, { stock_deducted: false });
         if (updated) updated.stock_deducted = false;
       }
-    } else {
-      // New reserve-bucket path (Decision Point #1): stock was moved to reserved at Accepted.
+    } else if (order.stock_reserved) {
+      // New reserve-bucket path (Decision Point #1): stock was moved to reserved
+      // at Accepted. Only release when a reservation actually happened — orders
+      // accepted without stock have stock_reserved=false and nothing to release.
       const released = await releaseReserveForOrder({
         companyId:   req.user.company_id,
         productId:   order.product_id,
@@ -480,6 +494,10 @@ async function updateOrderStatus(req, res) {
       });
       // Non-fatal: log but don't fail the cancel.
       if (!released.ok) console.warn('[updateOrderStatus] release on cancel failed:', released.error);
+      else {
+        await Order.findByIdAndUpdate(req.params.id, { stock_reserved: false });
+        if (updated) updated.stock_reserved = false;
+      }
     }
   }
 
