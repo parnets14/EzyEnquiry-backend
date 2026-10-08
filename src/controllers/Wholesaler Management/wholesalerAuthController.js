@@ -35,6 +35,40 @@ function signToken(userId) {
   })
 }
 
+// Wholesaler/seller companies are Company docs whose biz_type stems from
+// "wholesale" (free-text at signup: "Wholesaler", "Wholesalers", legacy typo
+// "Wholesale"). Retailer accounts (biz_type 'Retailer') must NOT be treated as
+// wholesalers — otherwise a retailer gets a wholesaler token and every ERP call
+// is rejected with "Use the retailer API for this account", so nothing loads.
+const WHOLESALER_BIZ_TYPE = /wholesale/i
+
+/**
+ * Find a user who genuinely belongs to a WHOLESALER (seller) account for the
+ * given mobile. Returns null for retailer-only numbers so the wholesaler auth
+ * flow correctly reports them as "not a wholesaler".
+ *
+ * @param {string} mobile
+ * @param {boolean} lean
+ * @returns {Promise<object|null>} the user doc (lean) or null
+ */
+async function findWholesalerUserByMobile(mobile, { lean = true } = {}) {
+  // A user may share a mobile across role records; pick the one whose company
+  // is a wholesaler company and whose role is not a retailer role.
+  const users = await User.find({ mobile }).lean()
+  if (!users.length) return null
+
+  for (const u of users) {
+    if (u.role === 'Retailer' || u.role === 'RetailerStaff') continue
+    if (!u.company_id) continue
+    const company = await Company.findById(u.company_id).select('biz_type').lean()
+    if (company && WHOLESALER_BIZ_TYPE.test(company.biz_type || '')) {
+      if (lean) return u
+      return User.findById(u._id)
+    }
+  }
+  return null
+}
+
 /** Build safe user object (no password_hash) + company status fields */
 async function buildUserResponse(user) {
   const company = user.company_id
@@ -73,7 +107,10 @@ async function checkMobile(req, res) {
   if (!mobile || !/^\d{10}$/.test(mobile)) {
     return sendError(res, 'Please provide a valid 10-digit mobile number.', 400)
   }
-  const user = await User.findOne({ mobile }).select('_id').lean()
+  // Only report "exists" for a genuine WHOLESALER account. A retailer-only
+  // number must return false here so the app does not try to log it into the
+  // wholesaler app (which would issue a token the ERP API then rejects).
+  const user = await findWholesalerUserByMobile(mobile)
   sendSuccess(res, { exists: !!user })
 }
 
@@ -93,9 +130,9 @@ async function sendOtpHandler(req, res) {
     return sendError(res, 'Please provide a valid 10-digit mobile number.', 400)
   }
 
-  // For login OTP — verify user exists before sending OTP
+  // For login OTP — verify a WHOLESALER account exists before sending OTP.
   if (purpose === 'login') {
-    const exists = await User.findOne({ mobile }).select('_id is_active').lean()
+    const exists = await findWholesalerUserByMobile(mobile)
     if (!exists) {
       return sendError(
         res,
@@ -158,17 +195,16 @@ async function verifyOtpHandler(req, res) {
     return sendError(res, result.reason || 'Invalid or expired OTP.', 400)
   }
 
-  // For login — find user and return token
+  // For login — find the WHOLESALER user and return token. A retailer-only
+  // number must be rejected here, never issued a wholesaler token.
   if (purpose === 'login') {
-    const userDoc = await User.findOne({ mobile })
-      .select('-password_hash')
-      .lean()
+    const userDoc = await findWholesalerUserByMobile(mobile)
 
     if (!userDoc) {
-      // User not found — give clear guidance
+      // No wholesaler account — give clear guidance
       return sendError(
         res,
-        'No account found for this mobile number. Please register first.',
+        'No wholesaler account found for this mobile number. Please register first.',
         404
       )
     }
