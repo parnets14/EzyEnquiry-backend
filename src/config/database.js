@@ -1,4 +1,10 @@
 const mongoose = require('mongoose')
+const dns = require('dns')
+
+// On some networks the configured DNS server refuses Node's SRV queries
+// (querySrv ECONNREFUSED), which breaks mongodb+srv:// connections even
+// though nslookup works. Force public resolvers so SRV lookups succeed.
+dns.setServers(['8.8.8.8', '1.1.1.1'])
 
 const connectDB = async () => {
   console.log('[DB] Connecting to MongoDB...')
