@@ -201,7 +201,7 @@ async function fanOutAcceptedQuotation(quotation, req) {
 
 /** GET /api/quotations */
 async function listQuotations(req, res) {
-  const { search, status, customer_id, customer_mobile, page = 1, limit = 200 } = req.query;
+  const { search, status, source, customer_id, customer_mobile, page = 1, limit = 200 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   // Build query:
@@ -254,6 +254,7 @@ async function listQuotations(req, res) {
   }
 
   if (status) query.status = status;
+  if (source) query.source = source;
   if (search) {
     const searchOr = [
       { quotation_no:   { $regex: search, $options: 'i' } },
@@ -364,6 +365,7 @@ async function createQuotation(req, res) {
     subtotal:        parseFloat(body.subtotal)         || 0,
     gst_amount:      parseFloat(body.gst_amount)       || 0,
     grand_total:     parseFloat(body.grand_total)      || 0,
+    discount_amount: parseFloat(body.discount_amount)  || 0,
     remarks:         body.remarks || body.notes || '',
     terms:           body.terms   || '',
     status:          'draft',
@@ -383,6 +385,7 @@ async function updateQuotation(req, res) {
   if (body.enquiry_id      !== undefined) update.enquiry_id      = body.enquiry_id || null;
   if (body.enquiry_no      !== undefined) update.enquiry_no      = body.enquiry_no;
   if (body.delivery_no     !== undefined) update.delivery_no     = body.delivery_no;
+  if (body.customer_id     !== undefined) update.customer_id     = body.customer_id || null;
   if (body.customer_name   !== undefined) update.customer_name   = body.customer_name;
   if (body.customer_phone  !== undefined) update.customer_phone  = body.customer_phone;
   if (body.customer_email  !== undefined) update.customer_email  = body.customer_email;
@@ -394,6 +397,9 @@ async function updateQuotation(req, res) {
   if (body.subtotal        !== undefined) update.subtotal        = parseFloat(body.subtotal)         || 0;
   if (body.gst_amount      !== undefined) update.gst_amount      = parseFloat(body.gst_amount)       || 0;
   if (body.grand_total     !== undefined) update.grand_total     = parseFloat(body.grand_total)      || 0;
+  if (body.discount_amount !== undefined) update.discount_amount = parseFloat(body.discount_amount)  || 0;
+  if (body.invoice_id      !== undefined) update.invoice_id      = body.invoice_id || null;
+  if (body.invoice_no      !== undefined) update.invoice_no      = body.invoice_no || '';
   if (body.remarks         !== undefined) update.remarks         = body.remarks;
   if (body.terms           !== undefined) update.terms           = body.terms;
 
@@ -418,7 +424,7 @@ async function updateQuotationStatus(req, res) {
   // Accepting a retailer quotation fans out into Order + Purchase + Sale and
   // notifies the retailer. Guard against re-running if already converted.
   const alreadyFannedOut = existing.status === 'accepted' || existing.status === 'converted';
-  if (status === 'accepted' && !alreadyFannedOut) {
+  if (status === 'accepted' && !alreadyFannedOut && existing.source !== 'Showroom Enquiry') {
     try {
       const order = await fanOutAcceptedQuotation(existing, req);
       const updated = await Quotation.findById(existing._id).lean();

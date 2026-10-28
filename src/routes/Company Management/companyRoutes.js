@@ -3,9 +3,11 @@ const router  = express.Router();
 const ctrl    = require('../../controllers/Company Management/companyController');
 const docCtrl = require('../../controllers/Company Management/companyDocumentController');
 const { authorize } = require('../../middleware/auth');
+const { companyKycUpload } = require('../../middleware/companyKycUpload');
 
 router.get   ('/',                ctrl.listCompanies);
 // KYC documents — signed-URL list (admins only). Must be before '/:id'.
+router.post  ('/:id/documents', authorize('Super Admin', 'Company Owner'), companyKycUpload, ctrl.uploadCompanyDocuments);
 router.get   ('/:id/documents',        authorize('Super Admin', 'Company Owner'), docCtrl.getCompanyDocuments);
 // Stream a single KYC document inline (gst | pan | address | biz). Before '/:id'.
 router.get   ('/:id/documents/:type',  authorize('Super Admin', 'Company Owner'), ctrl.getCompanyDocument);

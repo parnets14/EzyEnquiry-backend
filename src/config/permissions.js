@@ -94,7 +94,7 @@ const ROLE_MODULES = {
   'Super Admin': '*',
   'Company Owner': '*',
   'Manager': ['dashboard', 'profile', 'notifications', 'products', 'suppliers', 'purchases', 'purchase_reports', 'inventory', 'stock_transfer', 'warehouses', 'damage_breakage', 'inventory_reports', 'enquiries', 'orders', 'dispatches', 'customers', 'leads', 'followups', 'employee_master', 'employees', 'reports', 'staff_mgmt', 'stone_calc'],
-  'Accountant': ['dashboard', 'profile', 'notifications', 'products', 'suppliers', 'purchases', 'purchase_reports', 'inventory', 'inventory_reports', 'customers', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'reports', 'documents', 'stone_calc'],
+  'Accountant': ['dashboard', 'profile', 'notifications', 'products', 'suppliers', 'purchases', 'purchase_reports', 'inventory', 'inventory_reports', 'customers', 'enquiries', 'quotations', 'invoices', 'sales', 'expenses', 'payments', 'accounts', 'profit_loss', 'reports', 'documents', 'stone_calc'],
   'Sales Executive': ['dashboard', 'profile', 'notifications', 'products', 'enquiries', 'orders', 'customers', 'leads', 'followups', 'quotations', 'inventory', 'stone_calc'],
   'Warehouse Staff': ['dashboard', 'profile', 'notifications', 'warehouses', 'inventory', 'stock_transfer', 'damage_breakage', 'inventory_reports', 'orders', 'dispatches', 'stone_calc'],
   'Retailer': ['dashboard', 'profile', 'notifications', 'enquiries', 'orders', 'stone_calc'],
@@ -118,6 +118,7 @@ const ROLE_ACTION_GRANTS = {
   },
   'Accountant': {
     dashboard: ['view'], profile: '*', notifications: '*', products: ['view'], suppliers: ['view'], customers: ['view'],
+    enquiries: ['view', 'create', 'edit'],
     purchases: ['view', 'create', 'edit', 'export'], purchase_reports: ['view', 'export'],
     inventory: ['view'], inventory_reports: ['view', 'export'],
     quotations: ['view', 'create', 'edit', 'send', 'export'],
@@ -311,13 +312,26 @@ function moduleAccess(moduleKey) {
     if (role === 'Super Admin') return next()
     if (!role) return deny(res, moduleKey, 'view')
 
+    // Company registration (POST /api/companies → path '/') is generic
+    // onboarding: any authenticated company user may submit a company for
+    // approval, regardless of their role's `company` module grants.
+    if (moduleKey === 'company' && req.method === 'POST' && (req.path === '/' || req.path === '')) {
+      return next()
+    }
+
     const requestedAction = transitionAction(moduleKey, req)
     try {
       const RolePermission = require('../models/System Management/RolePermission')
       const companyId = req.user?.company_id
-      const doc = companyId ? await RolePermission.findOne({ company_id: companyId, role }).lean() : null
-      const permissions = effectivePermissions(role, doc?.permissions)
-      if (permissions[moduleKey]?.[requestedAction] === true) return next()
+      const User = require('../models/User Management/User')
+      const [user, doc] = await Promise.all([
+        req.user?._id ? User.findById(req.user._id).select('permissions').lean() : null,
+        companyId ? RolePermission.findOne({ company_id: companyId, role }).lean() : null,
+      ])
+      const hasUserOverrides = user?.permissions && typeof user.permissions === 'object'
+        && !Array.isArray(user.permissions) && Object.keys(user.permissions).length > 0
+      const permissions = effectivePermissions(role, hasUserOverrides ? user.permissions : doc?.permissions)
+      if (permissions[moduleKey]?.view === true && permissions[moduleKey]?.[requestedAction] === true) return next()
       return deny(res, moduleKey, requestedAction)
     } catch (error) {
       // Authorization must fail closed when its persistence lookup fails.

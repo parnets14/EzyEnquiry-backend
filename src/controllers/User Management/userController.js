@@ -1,6 +1,9 @@
 const bcrypt = require('bcryptjs')
 const { sendSuccess, sendError, paginate } = require('../../utils/helpers')
 const User = require('../../models/User Management/User')
+const Company = require('../../models/Company Management/Company')
+const RolePermission = require('../../models/System Management/RolePermission')
+const { MODULE_CATALOG, effectivePermissions } = require('../../config/permissions')
 
 const VALID_ROLES = ['Super Admin', 'Company Owner', 'Manager', 'Accountant', 'Sales Executive', 'Warehouse Staff', 'Retailer', 'Wholesaler']
 
@@ -19,6 +22,81 @@ async function listUsers(req, res) {
   ])
 
   sendSuccess(res, { users, pagination: paginate(total, parseInt(page), parseInt(limit)) })
+}
+
+/** GET /api/users/access-candidates — Admin-only registered people for page access assignment. */
+async function listAccessCandidates(req, res) {
+  const users = await User.find({
+    company_id: req.user.company_id,
+    role: { $ne: 'Super Admin' },
+  }).select('-password_hash').sort({ name: 1 }).lean()
+
+  const companyIds = [...new Set(users.map(user => String(user.company_id))) ]
+  const roleDocs = companyIds.length
+    ? await RolePermission.find({ company_id: { $in: companyIds } }).lean()
+    : []
+  const companies = companyIds.length
+    ? await Company.find({ _id: { $in: companyIds } }).select('name company_code').lean()
+    : []
+  const companyNames = new Map(companies.map(company => [String(company._id), company.name]))
+  const permissionsByCompanyRole = new Map(
+    roleDocs.map(doc => [`${doc.company_id}:${doc.role}`, doc.permissions]),
+  )
+
+  const people = users.map(user => {
+    const rolePermissions = permissionsByCompanyRole.get(`${user.company_id}:${user.role}`)
+    const hasUserOverrides = user.permissions && typeof user.permissions === 'object'
+      && !Array.isArray(user.permissions) && Object.keys(user.permissions).length > 0
+    return {
+      ...user,
+      company_name: companyNames.get(String(user.company_id)) || '',
+      access_permissions: effectivePermissions(
+        user.role,
+        hasUserOverrides ? user.permissions : rolePermissions,
+      ),
+    }
+  })
+
+  sendSuccess(res, { users: people, pages: MODULE_CATALOG.map(({ key, label, category }) => ({ key, label, category })) })
+}
+
+/** PATCH /api/users/:id/access — Admin-only page access assignment for one registered person. */
+async function updateUserAccess(req, res) {
+  const incoming = req.body?.permissions
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+    return sendError(res, 'permissions object is required.', 400)
+  }
+
+  const user = await User.findOne({
+    _id: req.params.id,
+    company_id: req.user.company_id,
+    role: { $ne: 'Super Admin' },
+  }).select('company_id role permissions').lean()
+  if (!user) return sendError(res, 'Registered person not found.', 404)
+
+  const rolePermission = await RolePermission.findOne({ company_id: user.company_id, role: user.role }).lean()
+  const base = effectivePermissions(user.role, user.permissions || rolePermission?.permissions)
+  const clean = {}
+  for (const module of MODULE_CATALOG) {
+    clean[module.key] = { ...base[module.key] }
+    const moduleInput = incoming[module.key]
+    if (typeof moduleInput === 'boolean') {
+      for (const action of module.actions) clean[module.key][action.key] = moduleInput
+    } else if (moduleInput && typeof moduleInput === 'object' && !Array.isArray(moduleInput)) {
+      for (const action of module.actions) {
+        if (typeof moduleInput[action.key] === 'boolean') {
+          clean[module.key][action.key] = moduleInput[action.key]
+        }
+      }
+    }
+  }
+
+  const updated = await User.findOneAndUpdate(
+    { _id: user._id, company_id: req.user.company_id },
+    { $set: { permissions: clean } },
+    { new: true },
+  ).select('-password_hash').lean()
+  sendSuccess(res, updated, 'Page access updated.')
 }
 
 /** GET /api/users/:id */
@@ -105,4 +183,4 @@ async function resetPassword(req, res) {
   sendSuccess(res, null, 'Password reset successfully.')
 }
 
-module.exports = { listUsers, getUser, createUser, updateUser, deleteUser, resetPassword }
+module.exports = { listUsers, listAccessCandidates, updateUserAccess, getUser, createUser, updateUser, deleteUser, resetPassword }

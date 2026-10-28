@@ -302,4 +302,136 @@ async function checkMobile(req, res) {
   sendSuccess(res, { exists: !!user })
 }
 
-module.exports = { login, sendOtp, verifyOtpHandler, me, changePassword, logout, register, uploadDocs, checkMobile }
+/**
+ * Locate the Company + its Company Owner user for a given mobile number.
+ * The mobile may belong to the Company record and/or the owner User.
+ * Returns { company, owner } or null when no match is found.
+ */
+async function findCompanyByMobile(mobile) {
+  // Prefer the Company Owner user tied to this mobile.
+  const owner = await User.findOne({ mobile, role: 'Company Owner' }).lean()
+  if (owner?.company_id) {
+    const company = await Company.findById(owner.company_id).lean()
+    if (company) return { company, owner }
+  }
+
+  // Fallback: match the Company record by mobile, then its owner user.
+  const company = await Company.findOne({ mobile }).lean()
+  if (!company) return null
+  const fallbackOwner = await User.findOne({ company_id: company._id, role: 'Company Owner' }).lean()
+  if (!fallbackOwner) return null
+  return { company, owner: fallbackOwner }
+}
+
+/**
+ * POST /api/auth/company-login/send-otp
+ * Company web-app login — step 1.
+ * Body: { mobile }
+ *
+ * Looks up the company by its registered mobile number, enforces that the
+ * company is Approved + active, then generates a fresh random OTP. Because
+ * SMS is not yet integrated, the OTP is returned in the response so the
+ * login screen can display it ("demo OTP").
+ */
+async function companyLoginSendOtp(req, res) {
+  const mobile = String(req.body.mobile || '').trim()
+  if (!/^\d{10}$/.test(mobile)) {
+    return sendError(res, 'Please provide a valid 10-digit mobile number.', 400)
+  }
+
+  const match = await findCompanyByMobile(mobile)
+  if (!match) return sendError(res, 'No company is registered with this mobile number.', 404)
+
+  const { company, owner } = match
+
+  // ── Approval / status gating ─────────────────────────────
+  if (company.status === 'Pending') {
+    return sendError(res, 'Your company registration is awaiting admin approval. Please try again once approved.', 403)
+  }
+  if (company.status === 'Rejected') {
+    return sendError(res, company.reject_reason
+      ? `Your company registration was rejected. Reason: ${company.reject_reason}`
+      : 'Your company registration was rejected. Please contact support.', 403)
+  }
+  if (company.status === 'Suspended' || company.is_active === false) {
+    return sendError(res, company.suspend_reason
+      ? `Your company account is suspended. Reason: ${company.suspend_reason}`
+      : 'Your company account is suspended. Please contact support.', 403)
+  }
+  if (company.status !== 'Approved') {
+    return sendError(res, 'Your company is not yet approved for login.', 403)
+  }
+  if (!owner.is_active) {
+    return sendError(res, 'This account is deactivated. Please contact support.', 403)
+  }
+
+  // ── Generate + store a fresh random OTP (demo) ───────────
+  const otp = generateOtp()
+  await storeOtp(mobile, otp, 'company_login', 'mobile')
+
+  console.log(`\n========================================`)
+  console.log(`  COMPANY LOGIN OTP for ${mobile}: ${otp}`)
+  console.log(`  Company: ${company.name} (${company.company_code})`)
+  console.log(`========================================\n`)
+
+  // SMS not integrated yet → return the OTP so the UI can show it for testing.
+  sendSuccess(res, {
+    sent: true,
+    demo_otp: otp,
+    company_name: company.name,
+  }, 'OTP generated. Use the demo OTP shown on screen to log in.')
+}
+
+/**
+ * POST /api/auth/company-login/verify-otp
+ * Company web-app login — step 2.
+ * Body: { mobile, otp }
+ *
+ * Verifies the OTP, re-checks approval status, and issues a JWT for the
+ * Company Owner user. The token carries the owner (and therefore the
+ * company_id), so all downstream data is scoped to this company only.
+ */
+async function companyLoginVerifyOtp(req, res) {
+  const mobile = String(req.body.mobile || '').trim()
+  const otpVal = String(req.body.otp || '').trim()
+  if (!/^\d{10}$/.test(mobile)) return sendError(res, 'Please provide a valid 10-digit mobile number.', 400)
+  if (!otpVal)                  return sendError(res, 'OTP is required.', 400)
+
+  const result = await verifyOtp(mobile, otpVal, 'company_login')
+  if (!result.valid) return sendError(res, result.reason, 400)
+
+  const match = await findCompanyByMobile(mobile)
+  if (!match) return sendError(res, 'No company is registered with this mobile number.', 404)
+
+  const { company, owner } = match
+
+  // Re-check status at verification time (state may have changed since step 1).
+  if (company.status !== 'Approved' || company.is_active === false) {
+    return sendError(res, 'Your company is not approved or has been deactivated.', 403)
+  }
+  if (!owner.is_active) return sendError(res, 'This account is deactivated.', 403)
+
+  await User.findByIdAndUpdate(owner._id, {
+    last_login:         new Date(),
+    mobile_verified_at: new Date(),
+  })
+
+  const token = signToken(owner._id)
+  const { password_hash, ...ownerSafe } = owner
+  const enrichedUser = {
+    ...ownerSafe,
+    company_name:      company.name,
+    company_status:    company.status,
+    subscription_plan: company.subscription_plan || null,
+    is_approved:       company.status === 'Approved',
+  }
+
+  console.log(`[Company Login] SUCCESS — company=${company.company_code} owner=${owner._id}`)
+  sendSuccess(res, { token, user: enrichedUser }, 'Login successful')
+}
+
+module.exports = {
+  login, sendOtp, verifyOtpHandler, me, changePassword, logout,
+  register, uploadDocs, checkMobile,
+  companyLoginSendOtp, companyLoginVerifyOtp,
+}

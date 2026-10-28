@@ -33,6 +33,7 @@ router.get   ('/',            guard, ctrl.listProducts);
 router.get   ('/:id',         guard, ctrl.getProduct);
 router.post  ('/:id/restore', guard, ctrl.restoreProduct);
 router.post  ('/bulk-upload', guard, handleSheetUpload, ctrl.bulkUploadProducts);
+router.post  ('/pdf-preview', guard, handleSheetUpload, ctrl.pdfPreviewProducts);
 router.post  ('/',            guard, handleUpload, ctrl.createProduct);
 router.put   ('/:id',         guard, handleUpload, ctrl.updateProduct);
 router.delete('/:id',         guard, ctrl.deleteProduct);

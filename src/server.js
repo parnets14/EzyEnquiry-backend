@@ -110,6 +110,8 @@ const ALLOWED_ORIGINS = [
   process.env.FRONTEND_URL,
   // ── Local development ─────────────────────────────────────
   "http://localhost:5173",
+  "http://localhost:5174", // extra vite dev port (when 5173 is busy)
+  "http://localhost:5175", // extra vite dev port (when 5173/5174 busy)
   "http://localhost:3000",
   "http://localhost:8081",
   // ── LAN / device IPs (dev only) ───────────────────────────

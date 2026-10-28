@@ -64,6 +64,10 @@ const companySchema = new mongoose.Schema(
     approved_at:      { type: Date,   default: null },
     approved_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     rejected_at:      { type: Date,   default: null },
+    // Which portal registered this company:
+    //   'company_web'  → registered via the company-login web app (port 5001)
+    //   'admin_panel'  → added by Super Admin via the admin console
+    registered_via:   { type: String, enum: ['company_web', 'admin_panel'], default: 'admin_panel' },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
 )

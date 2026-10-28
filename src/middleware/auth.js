@@ -55,6 +55,10 @@ async function authenticate(req, res, next) {
     if (!user.is_active) return res.status(401).json({ success: false, message: 'Account deactivated.' })
 
     req.user = user
+    // Expose the token's app flag so downstream guards can tell a mobile
+    // retailer-app login ({ app:'retailer' }) apart from a web company-login
+    // ({ userId } only). The web app must never be blocked by retailer gating.
+    req.tokenApp = decoded.app || null
     next()
   } catch (err) {
     if (

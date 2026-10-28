@@ -7,6 +7,7 @@ const { authenticate }    = require('../middleware/auth')
 const {
   login, sendOtp, verifyOtpHandler, me, changePassword,
   logout, register, uploadDocs, checkMobile,
+  companyLoginSendOtp, companyLoginVerifyOtp,
 } = require('../controllers/authController')
 
 const router = express.Router()
@@ -44,6 +45,10 @@ router.post('/check-mobile',  authRateLimiter, checkMobile)
 router.post('/login',         authRateLimiter, login)
 router.post('/send-otp',      authRateLimiter, sendOtp)
 router.post('/verify-otp',    authRateLimiter, verifyOtpHandler)
+
+// ── Company web-app login (mobile + demo OTP) ───────────────
+router.post('/company-login/send-otp',   authRateLimiter, companyLoginSendOtp)
+router.post('/company-login/verify-otp', authRateLimiter, companyLoginVerifyOtp)
 
 // ── Protected Routes ─────────────────────────────────────────
 router.get  ('/me',             authenticate, me)

@@ -124,6 +124,7 @@ const invoiceSchema = new mongoose.Schema(
     retailer_email:   { type: String, default: '' },
 
     // ── Meta ───────────────────────────────────────────────
+    invoice_metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
     remarks:          { type: String, default: '' },
     terms:            { type: String, default: '' },
     status:           {

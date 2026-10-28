@@ -47,6 +47,7 @@ router.use('/stock-transfers',        requireCompany, moduleAccess(MODULES.STOCK
 
 // ── Marketplace Management ───────────────────────────────────
 router.use('/enquiries',  requireCompany, moduleAccess(MODULES.ENQUIRIES),  require('./Marketplace Management/enquiryRoutes'));
+router.use('/showroom-enquiries', requireCompany, moduleAccess(MODULES.ENQUIRIES), require('./showroomEnquiryRoutes'));
 router.use('/orders',     requireCompany, moduleAccess(MODULES.ORDERS),     require('./Marketplace Management/orderRoutes'));
 router.use('/dispatches', requireCompany, moduleAccess(MODULES.DISPATCHES), require('./Marketplace Management/dispatchRoutes'));
 

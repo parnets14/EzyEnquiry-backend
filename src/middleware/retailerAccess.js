@@ -43,11 +43,20 @@ async function denyRetailerErpAccess(req, res, next) {
   // Super Admin has platform-wide access — never block them
   if (req.user?.role === 'Super Admin') return next()
 
-  if (req.user?.role === 'Retailer' || req.user?.role === 'RetailerStaff') {
-    return res.status(403).json({ success: false, message: 'Use the retailer API for this account.' })
-  }
-  const company = await loadCompany(req)
-  if (company?.biz_type === 'Retailer') {
+  // The ERP web app (company-login) must work for EVERY company, whether its
+  // biz_type is Wholesaler or Retailer. The wholesaler/retailer distinction is
+  // only meaningful in the mobile apps, which use dedicated tokens:
+  //   - retailer mobile app : token { app: 'retailer' }
+  //   - retailer staff app  : token { app: 'retailer_staff' } → role RetailerStaff
+  // Only those mobile-app tokens are redirected to the retailer API. A web
+  // company-login token (no `app` flag) is always allowed, so we do NOT block
+  // based on the company's biz_type anymore.
+  const isRetailerAppToken =
+    req.tokenApp === 'retailer' ||
+    req.tokenApp === 'retailer_staff' ||
+    req.user?.role === 'RetailerStaff'
+
+  if (isRetailerAppToken) {
     return res.status(403).json({ success: false, message: 'Use the retailer API for this account.' })
   }
   next()

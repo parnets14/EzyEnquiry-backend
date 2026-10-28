@@ -10,6 +10,7 @@ const mongoose         = require('mongoose')
 const ExcelJS          = require('exceljs')
 const fs               = require('fs')
 const path             = require('path')
+const { parsePdfToProducts } = require('../../utils/pdfProductParser')
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -837,7 +838,7 @@ async function bulkUploadProducts(req, res) {
   const brandCache    = new Map();
   const codeSeen      = new Set();   // prevent duplicates WITHIN the same upload
 
-  const createdByType = await getCreatorType(req);
+  const createdByType = 'Admin'; // ERP web bulk-upload is always Admin-created
   let defaultWarehouseId = null;
   const anyWarehouse = await Warehouse.findOne({ company_id: companyId, is_active: true }).select('_id').lean().catch(() => null);
   defaultWarehouseId = anyWarehouse?._id || null;
@@ -894,10 +895,16 @@ async function bulkUploadProducts(req, res) {
     } else if (norm.category) {
       const key = `name:${String(norm.category).toLowerCase()}`;
       if (!categoryCache.has(key)) {
-        const c = await Category.findOne({
+        let c = await Category.findOne({
           company_id: companyId,
           name: { $regex: new RegExp(`^${escapeRegex(String(norm.category))}$`, 'i') },
         }).select('_id parent_id').lean();
+        if (!c) {
+          try {
+            c = await Category.create({ company_id: companyId, name: String(norm.category).trim(), is_active: true });
+            c = c.toObject ? c.toObject() : c;
+          } catch (_) { c = null; }
+        }
         categoryCache.set(key, c || null);
       }
       const resolved = categoryCache.get(key);
@@ -926,10 +933,16 @@ async function bulkUploadProducts(req, res) {
     } else if (norm.brand) {
       const key = `name:${String(norm.brand).toLowerCase()}`;
       if (!brandCache.has(key)) {
-        const b = await Brand.findOne({
+        let b = await Brand.findOne({
           company_id: companyId,
           name: { $regex: new RegExp(`^${escapeRegex(String(norm.brand))}$`, 'i') },
         }).select('_id').lean();
+        if (!b) {
+          try {
+            b = await Brand.create({ company_id: companyId, name: String(norm.brand).trim(), is_active: true });
+            b = b.toObject ? b.toObject() : b;
+          } catch (_) { b = null; }
+        }
         brandCache.set(key, b || null);
       }
       const resolved = brandCache.get(key);
@@ -969,6 +982,7 @@ async function bulkUploadProducts(req, res) {
       color:         str(norm.color,         ''),
       design:        str(norm.design,        ''),
       description:   str(norm.description,   ''),
+      application:   str(norm.application,   ''),
       purchase_price:  num(norm.purchase_price,  0),
       selling_price:   num(norm.selling_price,   0),
       dealer_price:    num(norm.dealer_price,    0),
@@ -1034,9 +1048,43 @@ async function bulkUploadProducts(req, res) {
   }, `Bulk upload complete: ${imported.length} of ${total} product(s) imported.`, 200);
 }
 
+/** POST /api/products/pdf-preview — parse a catalogue PDF, return rows for preview */
+async function pdfPreviewProducts(req, res) {
+  const file = (req.files && req.files[0]) || null
+  if (!file) return sendError(res, 'No PDF file uploaded (field: "file").', 400)
+  const ext = path.extname(file.originalname || '').toLowerCase()
+  if (ext !== '.pdf') {
+    fs.promises.unlink(file.path).catch(() => {})
+    return sendError(res, 'Only PDF files are supported for this endpoint.', 400)
+  }
+  let buffer
+  try {
+    buffer = fs.readFileSync(file.path)
+  } catch (e) {
+    return sendError(res, `Could not read uploaded PDF: ${e.message}`, 500)
+  } finally {
+    fs.promises.unlink(file.path).catch(() => {})
+  }
+  try {
+    const result = await parsePdfToProducts(buffer, file.originalname || 'upload.pdf')
+    sendSuccess(res, {
+      rows:     result.rows,
+      warning:  result.warning || null,
+      pdfType:  result.pdfType,
+      numPages: result.numPages,
+      total:    result.rows.length,
+    }, result.warning
+      ? `PDF parsed with warnings — ${result.rows.length} product(s) found.`
+      : `PDF parsed successfully — ${result.rows.length} product(s) found.`
+    )
+  } catch (e) {
+    sendError(res, `PDF parsing failed: ${e.message}`, 500)
+  }
+}
+
 module.exports = {
   productsForSelect,
   listProducts, listAllProducts, getCompanyTaxonomy, getProductTaxonomy, getProduct, createProduct, updateProduct, deleteProduct,
   searchProducts, getRecycleBin, restoreProduct, checkProductTransactions,
-  bulkUploadProducts,
+  bulkUploadProducts, pdfPreviewProducts,
 }

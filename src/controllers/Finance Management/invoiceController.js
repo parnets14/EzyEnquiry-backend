@@ -8,6 +8,7 @@ const { generateOtp, storeOtp, verifyOtp } = require('../../utils/otp');
 const Employee = require('../../models/HR Management/Employee');
 const User     = require('../../models/User Management/User');
 const Customer = require('../../models/CRM Management/Customer');
+const Quotation = require('../../models/Finance Management/Quotation');
 
 // Loose phone matcher — matches stored phones containing the customer's last
 // 10 digits, so "+91 98765 43212" and "9876543212" both match.
@@ -219,6 +220,42 @@ async function getInvoice(req, res) {
 async function createInvoice(req, res) {
   const body = req.body;
 
+  // Bill generation from an approved showroom enquiry may be retried after a
+  // network timeout. Reuse an existing invoice and build its contents from the
+  // approved quotation so no unapproved or removed line can reach the bill.
+  if (body.quotation_id) {
+    const existingInvoice = await Invoice.findOne({
+      company_id: req.user.company_id,
+      quotation_id: body.quotation_id,
+    }).lean();
+    if (existingInvoice) return sendSuccess(res, existingInvoice, 'Invoice already generated for this quotation.');
+
+    if (/^[0-9a-fA-F]{24}$/.test(String(body.quotation_id))) {
+      const quotation = await Quotation.findOne({ _id: body.quotation_id, company_id: req.user.company_id }).lean();
+      if (quotation?.source === 'Showroom Enquiry') {
+        if (quotation.status !== 'accepted') return sendError(res, 'Approve this showroom enquiry before generating its bill.', 409);
+        const discount = Math.min(Math.max(0, Number(quotation.discount_amount) || 0), Number(quotation.subtotal) || 0);
+        const ratio = Number(quotation.subtotal) > 0 ? (Number(quotation.subtotal) - discount) / Number(quotation.subtotal) : 1;
+        body.items = (quotation.items || []).map(item => {
+          const taxable = Number(item.qty || 0) * Number(item.rate || 0) * ratio;
+          const gstAmount = taxable * Number(item.gst_percent || 0) / 100;
+          return { ...item, disc: Number(quotation.subtotal) > 0 ? discount / Number(quotation.subtotal) * 100 : 0, taxable_amount: taxable, gst_amount: gstAmount, total: taxable + gstAmount };
+        });
+        body.customer_id = quotation.customer_id || null;
+        body.customer_name = quotation.customer_name || '';
+        body.customer_phone = quotation.customer_phone || '';
+        body.customer_email = quotation.customer_email || '';
+        body.billing_address = quotation.delivery_no || '';
+        body.shipping_address = quotation.delivery_no || '';
+        body.quotation_no = quotation.quotation_no || '';
+        body.subtotal = Math.max(0, (Number(quotation.subtotal) || 0) - discount);
+        body.discount_amount = discount;
+        body.gst_amount = body.items.reduce((sum, item) => sum + Number(item.gst_amount || 0), 0);
+        body.grand_total = body.items.reduce((sum, item) => sum + Number(item.total || 0), 0);
+      }
+    }
+  }
+
   // Auto-number if not provided
   const invoice_no = (body.invoice_no || '').trim() || await generateInvoiceNo(req.user.company_id);
 
@@ -270,6 +307,7 @@ async function createInvoice(req, res) {
     payment_history:  Array.isArray(body.payment_history) ? body.payment_history : [],
 
     // Meta
+    invoice_metadata: body.invoice_metadata && typeof body.invoice_metadata === 'object' ? body.invoice_metadata : {},
     remarks:          body.remarks    || '',
     terms:            body.terms      || '',
     status:           'draft',
@@ -292,7 +330,7 @@ async function updateInvoice(req, res) {
     'invoice_date', 'due_date',
     'freight_charges', 'other_charges', 'subtotal', 'discount_amount',
     'gst_amount', 'round_off', 'grand_total', 'paid_amount',
-    'remarks', 'terms',
+    'invoice_metadata', 'remarks', 'terms',
   ];
 
   fields.forEach((f) => {

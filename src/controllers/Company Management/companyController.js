@@ -8,6 +8,72 @@ const Notification = require('../../models/System Management/Notification')
 const { notifyRetailer } = require('../../utils/pushHelper')
 const { getNextCompanyCode } = require('../../utils/sequence')
 
+/** Ensure the existing web login account remains a Company Owner. */
+async function ensureCompanyOwner(company) {
+  const existing = await User.findOne({ company_id: company._id, role: 'Company Owner' }).lean()
+  if (existing) return existing
+
+  const mobile = String(company.mobile || '').trim()
+  if (!/^\d{10}$/.test(mobile)) return null  // no valid mobile to log in with
+
+  // Email is unique+required on User. Use the company email if free, else a placeholder.
+  let email = String(company.email || '').toLowerCase().trim()
+  if (!email || await User.findOne({ email }).lean()) {
+    const base = (company.company_code || company.name || 'company')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 24) || 'company'
+    email = `owner.${base}@placeholder.ezyenquiry.local`
+    let n = 1
+    while (await User.findOne({ email }).lean()) {
+      email = `owner.${base}${n}@placeholder.ezyenquiry.local`
+      n++
+    }
+  }
+
+  try {
+    return await User.create({
+      company_id: company._id,
+      name:       (company.owner_name || '').trim() || `${company.name} Owner`,
+      email,
+      mobile,
+      role:       'Company Owner',
+      is_active:  true,
+    })
+  } catch (_) {
+    return null  // non-fatal; don't block approval
+  }
+}
+
+/** The retailer mobile app requires a Retailer role; keep it separate from web access. */
+async function ensureRetailerMobileUser(company) {
+  if (!/^retail/i.test(String(company.biz_type || ''))) return null
+  const existing = await User.findOne({ company_id: company._id, role: 'Retailer' }).lean()
+  if (existing) {
+    if (!existing.is_active) await User.updateOne({ _id: existing._id }, { is_active: true })
+    return existing
+  }
+
+  const mobile = String(company.mobile || '').trim()
+  if (!/^\d{10}$/.test(mobile)) return null
+  const base = String(company.company_code || company._id || 'company')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 24) || 'company'
+  let email = `retailer.${base}@placeholder.ezyenquiry.local`
+  let n = 1
+  while (await User.findOne({ email }).lean()) email = `retailer.${base}${n++}@placeholder.ezyenquiry.local`
+
+  try {
+    return await User.create({
+      company_id: company._id,
+      name: (company.owner_name || '').trim() || `${company.name} Owner`,
+      email,
+      mobile,
+      role: 'Retailer',
+      is_active: true,
+    })
+  } catch (_) {
+    return null
+  }
+}
+
 /** GET /api/companies */
 async function listCompanies(req, res) {
   const { status, plan, page = 1, limit = 20 } = req.query
@@ -16,6 +82,21 @@ async function listCompanies(req, res) {
   const query = {}
   if (status && status !== 'All') query.status            = status
   if (plan   && plan   !== 'All') query.subscription_plan = plan
+
+  if (req.user?.role === 'Super Admin') {
+    // Admin console: show all customer companies, but exclude:
+    // - the internal admin company (ADMIN-001)
+    // - companies registered via the company-web portal (they belong there)
+    query.company_code   = { $ne: 'ADMIN-001' }
+    query.registered_via = { $ne: 'company_web' }
+  } else {
+    // Any other logged-in company user (company-login) sees ONLY their own
+    // company — never the admin company and never any other company.
+    if (!req.user?.company_id) {
+      return sendSuccess(res, { companies: [], pagination: paginate(0, parseInt(page), parseInt(limit)) })
+    }
+    query._id = req.user.company_id
+  }
 
   const [total, companies] = await Promise.all([
     Company.countDocuments(query),
@@ -77,6 +158,48 @@ async function createCompany(req, res) {
   sendSuccess(res, company, 'Company registered. Awaiting admin approval.', 201)
 }
 
+
+/** POST /api/companies/:id/documents — store registration KYC files. */
+async function uploadCompanyDocuments(req, res) {
+  const company = await Company.findById(req.params.id)
+  if (!company) return sendError(res, 'Company not found.', 404)
+  if (req.user?.role !== 'Super Admin' && String(req.user?.company_id) !== String(company._id)) {
+    return sendError(res, 'You cannot upload documents for another company.', 403)
+  }
+
+  const fileMap = req.files || {}
+  const fields = {
+    gst: { url: 'doc_gst_url', flag: 'docs_gst', type: 'gst' },
+    pan: { url: 'doc_pan_url', flag: 'docs_pan', type: 'pan' },
+    address: { url: 'doc_reg_url', flag: 'docs_address', type: 'registration' },
+    biz: { url: 'doc_trade_url', flag: 'docs_biz', type: 'trade' },
+  }
+  let uploaded = 0
+  for (const [field, config] of Object.entries(fields)) {
+    const file = fileMap[field]?.[0]
+    if (!file) continue
+    const fileUrl = `/uploads/kyc/${file.filename}`
+    company[config.url] = fileUrl
+    company[config.flag] = true
+    const document = {
+      document_type: config.type,
+      file_url: fileUrl,
+      status: 'Pending',
+      reject_reason: '',
+      uploaded_at: new Date(),
+      reviewed_at: null,
+    }
+    const existingIndex = company.kyc_documents.findIndex(item => item.document_type === config.type)
+    if (existingIndex >= 0) company.kyc_documents[existingIndex] = document
+    else company.kyc_documents.push(document)
+    uploaded++
+  }
+  if (!uploaded) return sendError(res, 'Select at least one document to upload.', 400)
+
+  await company.save()
+  sendSuccess(res, { uploaded, company_id: company._id }, 'Documents uploaded successfully.')
+}
+
 /** PUT /api/companies/:id */
 async function updateCompany(req, res) {
   const { name, owner_name, biz_type, mobile, email, gst_number, pan_number, address, city, state, pin_code, subscription_plan } = req.body
@@ -105,7 +228,7 @@ async function approveCompany(req, res) {
     req.params.id,
     { status: 'Approved', reviewed_by: req.user._id },
     { new: true }
-  ).lean()
+  )
   if (!company) return sendError(res, 'Company not found.', 404)
 
   company.status = 'Approved'
@@ -121,6 +244,10 @@ async function approveCompany(req, res) {
 
   // Ensure all users of this company are active
   await User.updateMany({ company_id: company._id }, { is_active: true })
+
+  // Guarantee a Company Owner exists so this company can log in to the web app.
+  await ensureCompanyOwner(company)
+  await ensureRetailerMobileUser(company)
 
   // Find the company owner to send notification
   const owner = await User.findOne({ company_id: company._id, role: { $in: ['Company Owner', 'Retailer'] } }).lean()
@@ -418,4 +545,4 @@ async function getCompanyDocument(req, res) {
   fs.createReadStream(absPath).pipe(res)
 }
 
-module.exports = { listCompanies, getCompany, createCompany, updateCompany, approveCompany, rejectCompany, requestResubmission, suspendCompany, reactivateCompany, updateDocs, deleteCompany, getCompanyDocument }
+module.exports = { listCompanies, getCompany, createCompany, uploadCompanyDocuments, updateCompany, approveCompany, rejectCompany, requestResubmission, suspendCompany, reactivateCompany, updateDocs, deleteCompany, getCompanyDocument }

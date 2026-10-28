@@ -4,6 +4,8 @@ const ctrl    = require('../../controllers/User Management/userController');
 const { authorize } = require('../../middleware/auth');
 
 router.get   ('/',                   authorize('Super Admin', 'Company Owner', 'Manager'), ctrl.listUsers);
+router.get   ('/access-candidates',  authorize('Super Admin'), ctrl.listAccessCandidates);
+router.patch ('/:id/access',         authorize('Super Admin'), ctrl.updateUserAccess);
 router.get   ('/:id',                ctrl.getUser);
 router.post  ('/',                   authorize('Super Admin', 'Company Owner'), ctrl.createUser);
 router.put   ('/:id',                authorize('Super Admin', 'Company Owner'), ctrl.updateUser);
